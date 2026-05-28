@@ -1,0 +1,27 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+.vercel/
+
+# Runtime data (do NOT commit uploaded files / stored data)
+uploads/*
+!uploads/.gitkeep
+data/*
+!data/.gitkeep
+
+# Env
+.env
+.env.local
+.env.*.local
+
+# Logs
+npm-debug.log*
+yarn-debug.log*
+
+# Editor / OS
+.DS_Store
+.vscode/
+.idea/
+*.swp
