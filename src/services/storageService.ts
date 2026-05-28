@@ -1,8 +1,18 @@
 import * as fs from 'fs';
+import * as os from 'os';
 import * as path from 'path';
 import { UploadRecord, StoredData, ErrorRow, DataType, University } from '../types';
 
-const DATA_DIR = path.join(process.cwd(), 'data');
+// On Vercel the project filesystem is read-only — only /tmp is writable.
+// VERCEL=1 is set automatically in Vercel's runtime.
+// Note: /tmp is ephemeral, so writes within a request work but data does
+// NOT persist across separate function invocations. This is a known
+// limitation documented in the README (swap to Vercel KV/Blob or
+// Supabase for persistence).
+const IS_SERVERLESS = !!process.env.VERCEL;
+const DATA_DIR = IS_SERVERLESS
+  ? path.join(os.tmpdir(), 'voice-ai-console-data')
+  : path.join(process.cwd(), 'data');
 const UPLOADS_INDEX_FILE = path.join(DATA_DIR, 'uploads-index.json');
 
 function ensureDataDir(): void {

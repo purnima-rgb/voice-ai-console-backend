@@ -3,11 +3,14 @@ import { ErrorRow } from '../types';
 import { UNIFIED_CSV_COLUMNS } from '../config/constants';
 import * as fs from 'fs';
 
-export function parseCSV(filePath: string): Record<string, string>[] {
-  const fileContent = fs.readFileSync(filePath, 'utf-8');
-
+/**
+ * Parse a CSV string into row objects keyed by header.
+ * Use this when the CSV content is already in memory (e.g. from multer's
+ * memoryStorage on Vercel, where the filesystem is read-only).
+ */
+export function parseCSVString(content: string): Record<string, string>[] {
   // Remove BOM if present
-  const cleanContent = fileContent.replace(/^﻿/, '');
+  const cleanContent = content.replace(/^﻿/, '');
 
   const records = parse(cleanContent, {
     columns: true,
@@ -18,6 +21,11 @@ export function parseCSV(filePath: string): Record<string, string>[] {
   });
 
   return records as Record<string, string>[];
+}
+
+/** Disk-backed parser (kept for local dev / scripts). */
+export function parseCSV(filePath: string): Record<string, string>[] {
+  return parseCSVString(fs.readFileSync(filePath, 'utf-8'));
 }
 
 /**
@@ -34,9 +42,9 @@ export function parseCSV(filePath: string): Record<string, string>[] {
  * with row 4. Grade/GPA cells become "<Course Name> - Grade" /
  * "<Course Name> - GPA" so each column is uniquely identifiable.
  */
-export function parseGradesheetCSV(filePath: string): Record<string, string>[] {
-  const fileContent = fs.readFileSync(filePath, 'utf-8');
-  const cleanContent = fileContent.replace(/^﻿/, '');
+/** In-memory variant of parseGradesheetCSV — preferred on serverless. */
+export function parseGradesheetCSVString(content: string): Record<string, string>[] {
+  const cleanContent = content.replace(/^﻿/, '');
 
   const rawRows = parse(cleanContent, {
     columns: false,
@@ -48,7 +56,7 @@ export function parseGradesheetCSV(filePath: string): Record<string, string>[] {
 
   // Fallback to plain parsing if the file doesn't have the expected structure
   if (rawRows.length < 5) {
-    return parseCSV(filePath);
+    return parseCSVString(content);
   }
 
   const summaryRow = rawRows[1] || []; // Course Completed, Overall CGPA, Courses Incomplete
@@ -94,6 +102,11 @@ export function parseGradesheetCSV(filePath: string): Record<string, string>[] {
   }
 
   return records;
+}
+
+/** Disk-backed wrapper for parseGradesheetCSVString. */
+export function parseGradesheetCSV(filePath: string): Record<string, string>[] {
+  return parseGradesheetCSVString(fs.readFileSync(filePath, 'utf-8'));
 }
 
 export function generateUnifiedCSV(

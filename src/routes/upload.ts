@@ -1,10 +1,12 @@
 import { Router, Request, Response } from 'express';
 import multer from 'multer';
-import * as path from 'path';
-import * as fs from 'fs';
 import { v4 as uuidv4 } from 'uuid';
 import { authenticateToken, requireRole } from '../middleware/auth';
-import { parseCSV, parseGradesheetCSV, generateErrorReport } from '../services/csvService';
+import {
+  parseCSVString,
+  parseGradesheetCSVString,
+  generateErrorReport,
+} from '../services/csvService';
 import { validateStudentList, validateGradeSheet, validateCallingData } from '../services/validationService';
 import { saveUploadRecord, getUploadRecord, getUploadErrors } from '../services/storageService';
 import { MANDATORY_COLUMNS } from '../config/constants';
@@ -12,20 +14,9 @@ import { University } from '../types';
 
 const router = Router();
 
-const UPLOADS_DIR = path.join(process.cwd(), 'uploads');
-if (!fs.existsSync(UPLOADS_DIR)) {
-  fs.mkdirSync(UPLOADS_DIR, { recursive: true });
-}
-
-const storage = multer.diskStorage({
-  destination: (_req, _file, cb) => {
-    cb(null, UPLOADS_DIR);
-  },
-  filename: (_req, file, cb) => {
-    const uniqueSuffix = `${Date.now()}-${uuidv4()}`;
-    cb(null, `${uniqueSuffix}-${file.originalname}`);
-  },
-});
+// Use memory storage — works on Vercel's read-only filesystem.
+// Files stay in req.file.buffer, never touch disk.
+const storage = multer.memoryStorage();
 
 const fileFilter = (
   _req: Request,
@@ -64,7 +55,7 @@ router.post(
     }
 
     try {
-      const rows = parseCSV(req.file.path);
+      const rows = parseCSVString(req.file.buffer.toString("utf-8"));
       const { valid, errors } = validateStudentList(rows, MANDATORY_COLUMNS['student-list']);
 
       const uploadId = uuidv4();
@@ -123,7 +114,7 @@ router.post(
 
     try {
       // Grade sheets use a multi-row header format — use the dedicated parser
-      const rows = parseGradesheetCSV(req.file.path);
+      const rows = parseGradesheetCSVString(req.file.buffer.toString("utf-8"));
       const { valid, errors } = validateGradeSheet(rows, MANDATORY_COLUMNS['grade-sheet']);
 
       const uploadId = uuidv4();
@@ -175,7 +166,7 @@ router.post(
     }
 
     try {
-      const rows = parseCSV(req.file.path);
+      const rows = parseCSVString(req.file.buffer.toString("utf-8"));
       const { valid, errors } = validateCallingData(rows, MANDATORY_COLUMNS['calling-data']);
 
       const uploadId = uuidv4();
