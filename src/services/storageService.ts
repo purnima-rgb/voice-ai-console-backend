@@ -1,201 +1,228 @@
-import * as fs from 'fs';
-import * as os from 'os';
-import * as path from 'path';
-import { UploadRecord, StoredData, ErrorRow, DataType, University } from '../types';
+import { getSupabase, UPLOADS_TABLE } from '../lib/supabase';
+import { UploadRecord, ErrorRow, DataType, University } from '../types';
 
-// On Vercel the project filesystem is read-only — only /tmp is writable.
-// VERCEL=1 is set automatically in Vercel's runtime.
-// Note: /tmp is ephemeral, so writes within a request work but data does
-// NOT persist across separate function invocations. This is a known
-// limitation documented in the README (swap to Vercel KV/Blob or
-// Supabase for persistence).
-const IS_SERVERLESS = !!process.env.VERCEL;
-const DATA_DIR = IS_SERVERLESS
-  ? path.join(os.tmpdir(), 'voice-ai-console-data')
-  : path.join(process.cwd(), 'data');
-const UPLOADS_INDEX_FILE = path.join(DATA_DIR, 'uploads-index.json');
+/**
+ * Maximum raw file size we'll store inline (as base64 text) in the uploads
+ * table. Anything larger gets stored as null in raw_file_b64. For very large
+ * files, switch to Supabase Storage and store a path instead.
+ */
+const MAX_INLINE_RAW_BYTES = 8 * 1024 * 1024; // 8 MB
 
-function ensureDataDir(): void {
-  if (!fs.existsSync(DATA_DIR)) {
-    fs.mkdirSync(DATA_DIR, { recursive: true });
-  }
+interface DBUpload {
+  upload_id: string;
+  data_type: DataType;
+  university: string | null;
+  program: string | null;
+  file_name: string;
+  file_size_bytes: number;
+  file_ext: string;
+  raw_file_b64: string | null;
+  uploaded_by: string;
+  uploaded_at: string;
+  total_rows: number;
+  valid_rows: number;
+  error_rows: number;
+  status: 'success' | 'partial' | 'failed';
+  rows: Record<string, string>[];
+  errors: ErrorRow[];
 }
 
-function readJSON<T>(filePath: string, defaultValue: T): T {
-  if (!fs.existsSync(filePath)) {
-    return defaultValue;
-  }
-  try {
-    const content = fs.readFileSync(filePath, 'utf-8');
-    return JSON.parse(content) as T;
-  } catch {
-    return defaultValue;
-  }
+function rowToUploadRecord(r: DBUpload): UploadRecord {
+  return {
+    uploadId: r.upload_id,
+    fileName: r.file_name,
+    dataType: r.data_type,
+    university: (r.university || undefined) as University | undefined,
+    program: r.program || undefined,
+    uploadedAt: r.uploaded_at,
+    uploadedBy: r.uploaded_by,
+    totalRows: r.total_rows,
+    validRows: r.valid_rows,
+    errorRows: r.error_rows,
+    status: r.status,
+  };
 }
 
-function writeJSON(filePath: string, data: unknown): void {
-  ensureDataDir();
-  fs.writeFileSync(filePath, JSON.stringify(data, null, 2), 'utf-8');
+export interface SaveUploadInput {
+  uploadId: string;
+  metadata: Omit<UploadRecord, 'uploadId'>;
+  data: Record<string, string>[];
+  errors: ErrorRow[];
+  rawFile: {
+    buffer: Buffer;
+    originalName: string;
+  };
 }
 
-export function saveUploadRecord(
-  uploadId: string,
-  metadata: Omit<UploadRecord, 'uploadId'>,
-  data: Record<string, string>[],
-  errors: ErrorRow[]
-): void {
-  ensureDataDir();
+export async function saveUploadRecord(input: SaveUploadInput): Promise<void> {
+  const { uploadId, metadata, data, errors, rawFile } = input;
 
-  // Save the upload record to the index
-  const index = readJSON<UploadRecord[]>(UPLOADS_INDEX_FILE, []);
-  const record: UploadRecord = { uploadId, ...metadata };
-  index.unshift(record); // newest first
-  writeJSON(UPLOADS_INDEX_FILE, index);
+  const fileExt = (rawFile.originalName.split('.').pop() || 'csv').toLowerCase();
+  const rawB64 =
+    rawFile.buffer.length <= MAX_INLINE_RAW_BYTES
+      ? rawFile.buffer.toString('base64')
+      : null;
 
-  // Save the actual data
-  const storedData: StoredData = {
-    uploadId,
-    dataType: metadata.dataType,
-    university: metadata.university,
-    program: metadata.program,
+  const row: DBUpload = {
+    upload_id: uploadId,
+    data_type: metadata.dataType,
+    university: metadata.university || null,
+    program: metadata.program || null,
+    file_name: rawFile.originalName,
+    file_size_bytes: rawFile.buffer.length,
+    file_ext: fileExt,
+    raw_file_b64: rawB64,
+    uploaded_by: metadata.uploadedBy,
+    uploaded_at: metadata.uploadedAt,
+    total_rows: metadata.totalRows,
+    valid_rows: metadata.validRows,
+    error_rows: metadata.errorRows,
+    status: metadata.status,
     rows: data,
-    uploadedAt: metadata.uploadedAt,
+    errors,
   };
 
-  const dataFile = path.join(DATA_DIR, `${uploadId}-data.json`);
-  writeJSON(dataFile, storedData);
-
-  // Save errors if any
-  if (errors.length > 0) {
-    const errorsFile = path.join(DATA_DIR, `${uploadId}-errors.json`);
-    writeJSON(errorsFile, errors);
+  const { error } = await getSupabase().from(UPLOADS_TABLE).insert(row);
+  if (error) {
+    throw new Error(`Supabase insert failed: ${error.message}`);
   }
 }
 
-export function getUploadRecord(uploadId: string): UploadRecord | null {
-  const index = readJSON<UploadRecord[]>(UPLOADS_INDEX_FILE, []);
-  return index.find((r) => r.uploadId === uploadId) || null;
+export async function getUploadRecord(uploadId: string): Promise<UploadRecord | null> {
+  const { data, error } = await getSupabase()
+    .from(UPLOADS_TABLE)
+    .select('*')
+    .eq('upload_id', uploadId)
+    .maybeSingle();
+  if (error) throw new Error(`Supabase select failed: ${error.message}`);
+  return data ? rowToUploadRecord(data as DBUpload) : null;
 }
 
-export function getUploadErrors(uploadId: string): ErrorRow[] {
-  const errorsFile = path.join(DATA_DIR, `${uploadId}-errors.json`);
-  return readJSON<ErrorRow[]>(errorsFile, []);
+export async function getUploadErrors(uploadId: string): Promise<ErrorRow[]> {
+  const { data, error } = await getSupabase()
+    .from(UPLOADS_TABLE)
+    .select('errors')
+    .eq('upload_id', uploadId)
+    .maybeSingle();
+  if (error) throw new Error(`Supabase select failed: ${error.message}`);
+  return (data?.errors as ErrorRow[] | undefined) || [];
 }
 
-export function listUploads(filters?: {
+export async function listUploads(filters?: {
   dataType?: DataType;
   university?: University;
   program?: string;
-}): UploadRecord[] {
-  const index = readJSON<UploadRecord[]>(UPLOADS_INDEX_FILE, []);
+  limit?: number;
+}): Promise<UploadRecord[]> {
+  let query = getSupabase()
+    .from(UPLOADS_TABLE)
+    .select('*')
+    .order('uploaded_at', { ascending: false });
 
-  if (!filters) return index;
+  if (filters?.dataType)   query = query.eq('data_type', filters.dataType);
+  if (filters?.university) query = query.eq('university', filters.university);
+  if (filters?.program)    query = query.eq('program', filters.program);
+  if (filters?.limit)      query = query.limit(filters.limit);
 
-  return index.filter((record) => {
-    if (filters.dataType && record.dataType !== filters.dataType) return false;
-    if (filters.university && record.university !== filters.university) return false;
-    if (filters.program && record.program !== filters.program) return false;
-    return true;
-  });
+  const { data, error } = await query;
+  if (error) throw new Error(`Supabase select failed: ${error.message}`);
+  return (data || []).map((r) => rowToUploadRecord(r as DBUpload));
 }
 
-export function getStudentData(university?: string, program?: string): Record<string, string>[] {
-  const index = readJSON<UploadRecord[]>(UPLOADS_INDEX_FILE, []);
+async function fetchRowsForDataType(
+  dataType: DataType,
+  filters?: { university?: string; program?: string }
+): Promise<{ uploads: DBUpload[] }> {
+  let query = getSupabase()
+    .from(UPLOADS_TABLE)
+    .select('upload_id, data_type, university, program, rows, uploaded_at')
+    .eq('data_type', dataType)
+    .order('uploaded_at', { ascending: false });
 
-  const relevantUploads = index.filter((record) => {
-    if (record.dataType !== 'student-list') return false;
-    if (university && record.university !== university) return false;
-    if (program && record.program !== program) return false;
-    return true;
-  });
+  if (filters?.university) query = query.eq('university', filters.university);
+  if (filters?.program)    query = query.eq('program', filters.program);
 
-  // For each relevant upload, get the data (most recent first, deduplicate by email)
+  const { data, error } = await query;
+  if (error) throw new Error(`Supabase select failed: ${error.message}`);
+  return { uploads: (data || []) as DBUpload[] };
+}
+
+export async function getStudentData(
+  university?: string,
+  program?: string
+): Promise<Record<string, string>[]> {
+  const { uploads } = await fetchRowsForDataType('student-list', { university, program });
+
+  // Deduplicate by Email/Email ID, preferring the most recent upload.
   const emailsSeen = new Set<string>();
-  const allRows: Record<string, string>[] = [];
+  const out: Record<string, string>[] = [];
 
-  for (const upload of relevantUploads) {
-    const dataFile = path.join(DATA_DIR, `${upload.uploadId}-data.json`);
-    const stored = readJSON<StoredData | null>(dataFile, null);
-    if (stored) {
-      for (const row of stored.rows) {
-        const email = (row['Email ID'] || '').toLowerCase().trim();
-        if (email && !emailsSeen.has(email)) {
-          emailsSeen.add(email);
-          allRows.push({ ...row, University: upload.university || '', Program: upload.program || '' });
-        }
+  for (const upload of uploads) {
+    for (const row of upload.rows) {
+      const email = (row['Email'] || row['Email ID'] || '').toLowerCase().trim();
+      if (email && !emailsSeen.has(email)) {
+        emailsSeen.add(email);
+        out.push({
+          ...row,
+          University: upload.university || '',
+          Program: upload.program || '',
+        });
       }
     }
   }
-
-  return allRows;
+  return out;
 }
 
-export function getGradeSheetData(university?: string, program?: string): Record<string, string>[] {
-  const index = readJSON<UploadRecord[]>(UPLOADS_INDEX_FILE, []);
-
-  const relevantUploads = index.filter((record) => {
-    if (record.dataType !== 'grade-sheet') return false;
-    if (university && record.university !== university) return false;
-    if (program && record.program !== program) return false;
-    return true;
-  });
-
-  const allRows: Record<string, string>[] = [];
-
-  for (const upload of relevantUploads) {
-    const dataFile = path.join(DATA_DIR, `${upload.uploadId}-data.json`);
-    const stored = readJSON<StoredData | null>(dataFile, null);
-    if (stored) {
-      allRows.push(...stored.rows.map((r) => ({
-        ...r,
+export async function getGradeSheetData(
+  university?: string,
+  program?: string
+): Promise<Record<string, string>[]> {
+  const { uploads } = await fetchRowsForDataType('grade-sheet', { university, program });
+  const out: Record<string, string>[] = [];
+  for (const upload of uploads) {
+    for (const row of upload.rows) {
+      out.push({
+        ...row,
         University: upload.university || '',
         Program: upload.program || '',
-      })));
+      });
     }
   }
-
-  return allRows;
+  return out;
 }
 
-export function getCallingData(): Record<string, string>[] {
-  const index = readJSON<UploadRecord[]>(UPLOADS_INDEX_FILE, []);
-
-  const relevantUploads = index.filter((record) => record.dataType === 'calling-data');
-  const allRows: Record<string, string>[] = [];
-
-  for (const upload of relevantUploads) {
-    const dataFile = path.join(DATA_DIR, `${upload.uploadId}-data.json`);
-    const stored = readJSON<StoredData | null>(dataFile, null);
-    if (stored) {
-      allRows.push(...stored.rows);
-    }
-  }
-
-  return allRows;
+export async function getCallingData(): Promise<Record<string, string>[]> {
+  const { uploads } = await fetchRowsForDataType('calling-data');
+  const out: Record<string, string>[] = [];
+  for (const upload of uploads) out.push(...upload.rows);
+  return out;
 }
 
-export function getStats(): {
+export async function getStats(): Promise<{
   totalUploadsToday: number;
   totalStudents: number;
   totalCallingRecords: number;
   lastSyncTime: string | null;
-} {
-  const index = readJSON<UploadRecord[]>(UPLOADS_INDEX_FILE, []);
-  const today = new Date().toISOString().split('T')[0];
+}> {
+  const { data, error } = await getSupabase()
+    .from(UPLOADS_TABLE)
+    .select('data_type, uploaded_at, valid_rows')
+    .order('uploaded_at', { ascending: false });
+  if (error) throw new Error(`Supabase select failed: ${error.message}`);
 
-  const todayUploads = index.filter((r) => r.uploadedAt.startsWith(today));
-  const studentUploads = index.filter((r) => r.dataType === 'student-list');
-  const callingUploads = index.filter((r) => r.dataType === 'calling-data');
+  const rows = (data || []) as Array<Pick<DBUpload, 'data_type' | 'uploaded_at' | 'valid_rows'>>;
+  const todayPrefix = new Date().toISOString().split('T')[0];
 
-  const totalStudents = studentUploads.reduce((sum, r) => sum + r.validRows, 0);
-  const totalCalling = callingUploads.reduce((sum, r) => sum + r.validRows, 0);
+  let totalUploadsToday = 0;
+  let totalStudents = 0;
+  let totalCallingRecords = 0;
+  let lastSyncTime: string | null = rows[0]?.uploaded_at || null;
 
-  const lastUpload = index[0];
+  for (const r of rows) {
+    if (r.uploaded_at.startsWith(todayPrefix)) totalUploadsToday += 1;
+    if (r.data_type === 'student-list')  totalStudents += r.valid_rows;
+    if (r.data_type === 'calling-data')  totalCallingRecords += r.valid_rows;
+  }
 
-  return {
-    totalUploadsToday: todayUploads.length,
-    totalStudents,
-    totalCallingRecords: totalCalling,
-    lastSyncTime: lastUpload ? lastUpload.uploadedAt : null,
-  };
+  return { totalUploadsToday, totalStudents, totalCallingRecords, lastSyncTime };
 }

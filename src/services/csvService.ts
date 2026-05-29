@@ -1,7 +1,55 @@
 import { parse } from 'csv-parse/sync';
+import * as XLSX from 'xlsx';
 import { ErrorRow } from '../types';
 import { UNIFIED_CSV_COLUMNS } from '../config/constants';
 import * as fs from 'fs';
+
+/**
+ * Detect whether a filename points to an Excel workbook.
+ * Anything else is treated as CSV.
+ */
+export function isExcelFile(filename: string): boolean {
+  return /\.xlsx?$/i.test(filename);
+}
+
+/** Read an Excel workbook into raw rows (header on row 0, then data rows). */
+function excelToRawRows(buffer: Buffer): string[][] {
+  const wb = XLSX.read(buffer, { type: 'buffer' });
+  const sheetName = wb.SheetNames[0];
+  const sheet = wb.Sheets[sheetName];
+  // header: 1 returns an array of arrays (no auto column names)
+  // raw: false formats everything as strings so we match CSV behavior
+  // defval: '' avoids undefined gaps for blank cells
+  return XLSX.utils.sheet_to_json<string[]>(sheet, {
+    header: 1,
+    raw: false,
+    defval: '',
+    blankrows: false,
+  });
+}
+
+/**
+ * Convert raw rows (where rawRows[0] is the header line and rawRows[1+] are
+ * data rows) into a list of header-keyed records. Mirrors the behavior of
+ * csv-parse with columns:true.
+ */
+function rawRowsToRecords(rawRows: string[][]): Record<string, string>[] {
+  if (rawRows.length === 0) return [];
+  const headers = (rawRows[0] || []).map((h) => String(h || '').trim());
+
+  const out: Record<string, string>[] = [];
+  for (let r = 1; r < rawRows.length; r++) {
+    const row = rawRows[r] || [];
+    if (row.every((c) => !c || String(c).trim() === '')) continue;
+    const rec: Record<string, string> = {};
+    for (let c = 0; c < headers.length; c++) {
+      if (!headers[c]) continue;
+      rec[headers[c]] = String(row[c] ?? '').trim();
+    }
+    out.push(rec);
+  }
+  return out;
+}
 
 /**
  * Parse a CSV string into row objects keyed by header.
@@ -23,6 +71,20 @@ export function parseCSVString(content: string): Record<string, string>[] {
   return records as Record<string, string>[];
 }
 
+/**
+ * Auto-detect file type from filename and parse the in-memory buffer.
+ * Use this from upload routes — handles both CSV and Excel transparently.
+ */
+export function parseRowsFromBuffer(
+  buffer: Buffer,
+  filename: string
+): Record<string, string>[] {
+  if (isExcelFile(filename)) {
+    return rawRowsToRecords(excelToRawRows(buffer));
+  }
+  return parseCSVString(buffer.toString('utf-8'));
+}
+
 /** Disk-backed parser (kept for local dev / scripts). */
 export function parseCSV(filePath: string): Record<string, string>[] {
   return parseCSVString(fs.readFileSync(filePath, 'utf-8'));
@@ -42,6 +104,67 @@ export function parseCSV(filePath: string): Record<string, string>[] {
  * with row 4. Grade/GPA cells become "<Course Name> - Grade" /
  * "<Course Name> - GPA" so each column is uniquely identifiable.
  */
+/**
+ * Reconstruct gradesheet records from the raw rows.
+ * GGU gradesheets use a 4-row header before the data:
+ *   Row 0: Title + per-course Credit values
+ *   Row 1: Summary headers (Course Completed, Overall CGPA, Courses Incomplete)
+ *   Row 2: Course names (paired with Grade/GPA columns)
+ *   Row 3: Main field headers (Email, User ID, ..., Grade, GPA, Grade, GPA, ...)
+ *   Row 4+: Data
+ *
+ * Grade/GPA cells get prefixed with their course name so each column is unique
+ * (e.g. "Fundamentals of Business - Grade").
+ */
+function gradesheetRawRowsToRecords(
+  rawRows: string[][]
+): Record<string, string>[] {
+  if (rawRows.length < 5) {
+    // Doesn't look like a gradesheet — fall back to flat parsing
+    return rawRowsToRecords(rawRows);
+  }
+
+  const summaryRow = rawRows[1] || [];
+  const courseRow  = rawRows[2] || [];
+  const headerRow  = rawRows[3] || [];
+
+  const finalHeaders: string[] = [];
+  for (let i = 0; i < headerRow.length; i++) {
+    let h = String(headerRow[i] || '').trim();
+
+    if (!h) {
+      const sh = String(summaryRow[i] || '').trim();
+      if (sh) h = sh;
+    }
+
+    if (h === 'Grade' || h === 'GPA') {
+      let courseName = '';
+      for (let j = i; j >= 0; j--) {
+        const c = String(courseRow[j] || '').trim();
+        if (c) { courseName = c; break; }
+      }
+      if (courseName) h = `${courseName} - ${h}`;
+    }
+
+    if (!h) h = `Column ${i + 1}`;
+    finalHeaders.push(h);
+  }
+
+  const records: Record<string, string>[] = [];
+  for (let r = 4; r < rawRows.length; r++) {
+    const row = rawRows[r] || [];
+    if (row.every((c) => !c || String(c).trim() === '')) continue;
+
+    const record: Record<string, string> = {};
+    for (let c = 0; c < finalHeaders.length; c++) {
+      record[finalHeaders[c]] = String(row[c] ?? '').trim();
+    }
+    records.push(record);
+  }
+
+  return records;
+}
+
 /** In-memory variant of parseGradesheetCSV — preferred on serverless. */
 export function parseGradesheetCSVString(content: string): Record<string, string>[] {
   const cleanContent = content.replace(/^﻿/, '');
@@ -54,54 +177,25 @@ export function parseGradesheetCSVString(content: string): Record<string, string
     relax_quotes: true,
   }) as string[][];
 
-  // Fallback to plain parsing if the file doesn't have the expected structure
   if (rawRows.length < 5) {
     return parseCSVString(content);
   }
 
-  const summaryRow = rawRows[1] || []; // Course Completed, Overall CGPA, Courses Incomplete
-  const courseRow  = rawRows[2] || []; // Course names for Grade/GPA pairs
-  const headerRow  = rawRows[3] || []; // Main field headers
+  return gradesheetRawRowsToRecords(rawRows);
+}
 
-  // Build the effective column headers
-  const finalHeaders: string[] = [];
-  for (let i = 0; i < headerRow.length; i++) {
-    let h = (headerRow[i] || '').trim();
-
-    // For blank cells in main header row, fall back to summary header row
-    if (!h) {
-      const sh = (summaryRow[i] || '').trim();
-      if (sh) h = sh;
-    }
-
-    // For Grade/GPA cells, prepend the nearest non-empty course name from row 3
-    if (h === 'Grade' || h === 'GPA') {
-      let courseName = '';
-      for (let j = i; j >= 0; j--) {
-        const c = (courseRow[j] || '').trim();
-        if (c) { courseName = c; break; }
-      }
-      if (courseName) h = `${courseName} - ${h}`;
-    }
-
-    if (!h) h = `Column ${i + 1}`;
-    finalHeaders.push(h);
+/**
+ * Auto-detect gradesheet file type from filename and parse the buffer.
+ * Use this from upload routes — handles both CSV and Excel grade sheets.
+ */
+export function parseGradesheetFromBuffer(
+  buffer: Buffer,
+  filename: string
+): Record<string, string>[] {
+  if (isExcelFile(filename)) {
+    return gradesheetRawRowsToRecords(excelToRawRows(buffer));
   }
-
-  // Build records starting from row 5 (index 4); skip wholly empty rows
-  const records: Record<string, string>[] = [];
-  for (let r = 4; r < rawRows.length; r++) {
-    const row = rawRows[r] || [];
-    if (row.every((c) => !c || c.trim() === '')) continue;
-
-    const record: Record<string, string> = {};
-    for (let c = 0; c < finalHeaders.length; c++) {
-      record[finalHeaders[c]] = (row[c] || '').trim();
-    }
-    records.push(record);
-  }
-
-  return records;
+  return parseGradesheetCSVString(buffer.toString('utf-8'));
 }
 
 /** Disk-backed wrapper for parseGradesheetCSVString. */

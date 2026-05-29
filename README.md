@@ -20,40 +20,45 @@ This repo is configured to deploy as a Vercel **serverless function**:
 - `src/index.ts` — Local-dev entry point (calls `app.listen()`)
 - `vercel.json` — routes every request to `api/index.ts`
 
-Steps:
+### Setup steps
+
+#### 1. Set up Supabase (one-time)
+
+1. Create a project at https://supabase.com (free tier is fine)
+2. Open the **SQL Editor** in your project
+3. Paste the contents of `migrations/001_init.sql` and run it
+4. Go to **Settings → API** and copy:
+   - **Project URL** → `SUPABASE_URL`
+   - **service_role** secret key → `SUPABASE_SERVICE_ROLE_KEY`
+
+#### 2. Deploy backend to Vercel
+
 1. Vercel → **Add New** → **Project** → import this repo
-2. Set **Root Directory** to the repo root (default)
-3. Vercel auto-detects the `vercel.json`
-4. Set environment variables:
+2. Leave Root Directory as default; Vercel auto-detects the `vercel.json`
+3. **Environment Variables:**
    - `JWT_SECRET` — any long random string
    - `FRONTEND_URL` — your deployed frontend URL (e.g. `https://voice-ai-console-frontend.vercel.app`)
+   - `SUPABASE_URL` — from step 1 above
+   - `SUPABASE_SERVICE_ROLE_KEY` — from step 1 above
    - `NODE_ENV` — `production`
-5. Deploy
+4. Deploy
 
 After deploy, update the **frontend's** `VITE_API_URL` env var to `https://<your-backend>.vercel.app/api` and redeploy the frontend.
 
-## ⚠️ Important: Vercel serverless storage limitation
+## Storage
 
-**This app uses local-disk storage** (multer writes uploads to `uploads/`, JSON files in `data/`). Vercel serverless functions have an **ephemeral filesystem** — files written during a request **do not persist** across requests.
+All uploads (metadata + parsed rows + errors + the original raw file as
+base64) are stored in a single Supabase Postgres table called `uploads`.
+This means:
 
-What works on Vercel:
-- ✅ Login / authentication
-- ✅ Health check (`/health`)
-- ✅ CSV upload + validation (returns valid/invalid row counts in the response)
-- ✅ Error report download (within the same request lifecycle)
+- ✅ Uploaded data persists across requests / function invocations
+- ✅ Raw client input files are preserved (CSV text or Excel base64)
+- ✅ Listing past uploads + the unified CSV export work end-to-end on Vercel
+- ✅ Both CSV and Excel (.xlsx, .xls) files are accepted as input
 
-What does NOT work on Vercel without changes:
-- ❌ Listing previously uploaded data
-- ❌ Downloading unified CSV after uploads
-- ❌ Upload history (`/api/data/upload-history`)
-- ❌ Stats persistence (`/api/data/stats`)
-
-To make it fully production-ready, swap the file-based `storageService` for one of:
-- **Vercel Postgres / KV / Blob** (same platform, easiest)
-- **Supabase** (Postgres + Storage, free tier)
-- **AWS S3 + DynamoDB / MongoDB Atlas**
-
-Or deploy this backend to **Railway / Render / Fly.io** instead — those preserve filesystem behavior across requests.
+Raw files larger than ~8 MB are stored with `raw_file_b64 = null` (parsed
+rows are still saved). For very large files, swap inline storage for a
+Supabase Storage bucket and store the bucket path instead.
 
 ## API endpoints
 
