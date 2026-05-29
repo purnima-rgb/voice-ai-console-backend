@@ -165,6 +165,14 @@ router.post(
       return;
     }
 
+    // University and program are now required for calling data too (UI parity
+    // with student-list / grade-sheet uploads).
+    const { university, program } = req.body;
+    if (!university || !program) {
+      res.status(400).json({ error: 'University and program are required' });
+      return;
+    }
+
     try {
       const rows = parseCSVString(req.file.buffer.toString("utf-8"));
       const { valid, errors } = validateCallingData(rows, MANDATORY_COLUMNS['calling-data']);
@@ -177,6 +185,8 @@ router.post(
         {
           fileName: req.file.originalname,
           dataType: 'calling-data',
+          university: university as University,
+          program,
           uploadedAt: now,
           uploadedBy: req.user!.email,
           totalRows: rows.length,
