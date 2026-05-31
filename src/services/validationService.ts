@@ -1,5 +1,10 @@
 import { ValidationResult, ErrorRow } from '../types';
+import { OPTIONAL_COLUMNS } from '../config/constants';
 
+/**
+ * "mandatory-list" model: every column in `mandatoryColumns` must exist and
+ * have a non-empty value on every row. Used by grade-sheet and calling-data.
+ */
 export function validateRows(
   rows: Record<string, string>[],
   mandatoryColumns: string[]
@@ -31,8 +36,65 @@ export function validateRows(
   return { valid, errors };
 }
 
-export function validateStudentList(rows: Record<string, string>[], mandatoryColumns: string[]): ValidationResult {
-  return validateRows(rows, mandatoryColumns);
+/**
+ * "all-except-optional" model: every column present in the uploaded CSV is
+ * required to have a value, EXCEPT the columns named in `optionalColumns`.
+ *
+ * This is used for student-list across MBA / DBA / ET, where the exact
+ * column set varies by course but the small list of optional columns
+ * (Prism User ID, GGU User ID, GGU Email, Region, Concentration) is fixed.
+ *
+ * Padding rows (every key identifier empty: Email + First Name + Last Name)
+ * are skipped silently — they're typically artifacts of Excel/Sheets export.
+ */
+export function validateAllExceptOptional(
+  rows: Record<string, string>[],
+  optionalColumns: string[]
+): ValidationResult {
+  const valid: Record<string, string>[] = [];
+  const errors: ErrorRow[] = [];
+
+  // Case-insensitive lookup so "Region" and "region" both match
+  const optionalSet = new Set(optionalColumns.map((c) => c.toLowerCase().trim()));
+  const isOptional = (col: string): boolean => optionalSet.has(col.toLowerCase().trim());
+
+  rows.forEach((row, index) => {
+    // Skip padding rows (no Email / First Name / Last Name at all)
+    const email     = String(row['Email']      || row['Email ID'] || '').trim();
+    const firstName = String(row['First Name'] || '').trim();
+    const lastName  = String(row['Last Name']  || '').trim();
+    if (!email && !firstName && !lastName) return;
+
+    const missing: string[] = [];
+    for (const col of Object.keys(row)) {
+      if (isOptional(col)) continue;
+      const v = row[col];
+      if (v === undefined || v === null || String(v).trim() === '') {
+        missing.push(col);
+      }
+    }
+
+    if (missing.length === 0) {
+      valid.push(row);
+    } else {
+      errors.push({
+        rowNumber: index + 2,
+        data: row,
+        errorMessage: `Missing required fields: ${missing.join(', ')}`,
+      });
+    }
+  });
+
+  return { valid, errors };
+}
+
+/**
+ * Student list uses the opt-out validator — column set varies by course,
+ * but the small optional list (Prism User ID, GGU User ID, GGU Email,
+ * Region, Concentration) stays constant.
+ */
+export function validateStudentList(rows: Record<string, string>[]): ValidationResult {
+  return validateAllExceptOptional(rows, OPTIONAL_COLUMNS['student-list'] || []);
 }
 
 export function validateGradeSheet(rows: Record<string, string>[], mandatoryColumns: string[]): ValidationResult {

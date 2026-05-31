@@ -66,7 +66,7 @@ router.post(
 
     try {
       const rows = parseRowsFromBuffer(req.file.buffer, req.file.originalname);
-      const { valid, errors } = validateStudentList(rows, MANDATORY_COLUMNS['student-list']);
+      const { valid, errors } = validateStudentList(rows);
 
       const uploadId = uuidv4();
       const now = new Date().toISOString();
