@@ -32,7 +32,16 @@ export const OPTIONAL_COLUMNS: Record<string, string[]> = {
     'Region',
     'Concentration',
   ],
-  'grade-sheet': [],
+  // Grade sheet also uses the opt-out model — for DBA / ET courses the
+  // exact column set varies but the optional list stays the same.
+  // Note: per-course Grade / GPA cells can legitimately be empty for
+  // courses a student hasn't attempted yet, so anything ending in
+  // " - Grade" or " - GPA" is treated as optional in the validator too.
+  'grade-sheet': [
+    'Slot / Concentration',
+    'GGU Learner Status',
+    'Last Name',
+  ],
   'calling-data': [],
 };
 

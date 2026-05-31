@@ -130,7 +130,7 @@ router.post(
     try {
       // Grade sheets use a multi-row header format — use the dedicated parser
       const rows = parseGradesheetFromBuffer(req.file.buffer, req.file.originalname);
-      const { valid, errors } = validateGradeSheet(rows, MANDATORY_COLUMNS['grade-sheet']);
+      const { valid, errors } = validateGradeSheet(rows);
 
       const uploadId = uuidv4();
       const now = new Date().toISOString();

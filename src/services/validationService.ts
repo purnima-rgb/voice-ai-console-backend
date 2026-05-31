@@ -97,8 +97,30 @@ export function validateStudentList(rows: Record<string, string>[]): ValidationR
   return validateAllExceptOptional(rows, OPTIONAL_COLUMNS['student-list'] || []);
 }
 
-export function validateGradeSheet(rows: Record<string, string>[], mandatoryColumns: string[]): ValidationResult {
-  return validateRows(rows, mandatoryColumns);
+/**
+ * Grade sheet uses the opt-out model too. Optional set:
+ *   - The 3 explicitly client-flagged columns
+ *     (Slot / Concentration, GGU Learner Status, Last Name)
+ *   - All per-course "<Course Name> - Grade" / "<Course Name> - GPA" columns —
+ *     these can legitimately be empty for courses a student hasn't attempted
+ *     yet (e.g. Concentration 1/2/3 in the sample data).
+ *
+ * Padding-row detection (Email + First Name + Last Name all blank) is shared
+ * with student list — same heuristic, same behavior.
+ */
+export function validateGradeSheet(rows: Record<string, string>[]): ValidationResult {
+  const baseOptional = OPTIONAL_COLUMNS['grade-sheet'] || [];
+
+  // Derive the per-course Grade/GPA columns dynamically from the first row's
+  // keys — saves us hardcoding course names which differ across MBA / DBA / ET.
+  const courseGradeCols: string[] = [];
+  if (rows.length > 0) {
+    for (const col of Object.keys(rows[0])) {
+      if (/ - (Grade|GPA)$/i.test(col)) courseGradeCols.push(col);
+    }
+  }
+
+  return validateAllExceptOptional(rows, [...baseOptional, ...courseGradeCols]);
 }
 
 export function validateCallingData(rows: Record<string, string>[], mandatoryColumns: string[]): ValidationResult {
