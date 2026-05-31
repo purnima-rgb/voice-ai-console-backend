@@ -25,6 +25,7 @@ export const UNIVERSITY_NAMES: Record<University, string> = {
  */
 export const OPTIONAL_COLUMNS: Record<string, string[]> = {
   'student-list': [
+    'Last Name',
     'Prism User ID',
     'GGU User ID',
     'GGU Email',

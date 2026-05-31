@@ -81,22 +81,26 @@ router.post(
           uploadedAt: now,
           uploadedBy: req.user!.email,
           totalRows: rows.length,
-          validRows: valid.length,
+          validRows: errors.length === 0 ? valid.length : 0,
           errorRows: errors.length,
-          status: errors.length === 0 ? 'success' : valid.length > 0 ? 'partial' : 'failed',
+          status: errors.length === 0 ? 'success' : 'failed',
         },
-        data: valid,
+        // Reject the whole upload if there are ANY validation errors.
+        // No partial saves: data committed only when every row is clean.
+        // Errors are still persisted so the user can download the error report.
+        data: errors.length === 0 ? valid : [],
         errors,
         rawFile: { buffer: req.file.buffer, originalName: req.file.originalname },
       });
 
       res.json({
         uploadId,
+        success: errors.length === 0,
         totalRows: rows.length,
-        validRows: valid.length,
+        validRows: errors.length === 0 ? valid.length : 0,
         errorRows: errors.length,
         errors: errors.slice(0, 100), // first 100 errors
-        data: valid.slice(0, 50),     // first 50 rows for preview
+        data: errors.length === 0 ? valid.slice(0, 50) : [], // no preview on reject
       });
     } catch (err) {
       console.error('Upload error:', err);
@@ -141,22 +145,26 @@ router.post(
           uploadedAt: now,
           uploadedBy: req.user!.email,
           totalRows: rows.length,
-          validRows: valid.length,
+          validRows: errors.length === 0 ? valid.length : 0,
           errorRows: errors.length,
-          status: errors.length === 0 ? 'success' : valid.length > 0 ? 'partial' : 'failed',
+          status: errors.length === 0 ? 'success' : 'failed',
         },
-        data: valid,
+        // Reject the whole upload if there are ANY validation errors.
+        // No partial saves: data committed only when every row is clean.
+        // Errors are still persisted so the user can download the error report.
+        data: errors.length === 0 ? valid : [],
         errors,
         rawFile: { buffer: req.file.buffer, originalName: req.file.originalname },
       });
 
       res.json({
         uploadId,
+        success: errors.length === 0,
         totalRows: rows.length,
-        validRows: valid.length,
+        validRows: errors.length === 0 ? valid.length : 0,
         errorRows: errors.length,
         errors: errors.slice(0, 100),
-        data: valid.slice(0, 50),
+        data: errors.length === 0 ? valid.slice(0, 50) : [],
       });
     } catch (err) {
       console.error('Upload error:', err);
@@ -200,22 +208,26 @@ router.post(
           uploadedAt: now,
           uploadedBy: req.user!.email,
           totalRows: rows.length,
-          validRows: valid.length,
+          validRows: errors.length === 0 ? valid.length : 0,
           errorRows: errors.length,
-          status: errors.length === 0 ? 'success' : valid.length > 0 ? 'partial' : 'failed',
+          status: errors.length === 0 ? 'success' : 'failed',
         },
-        data: valid,
+        // Reject the whole upload if there are ANY validation errors.
+        // No partial saves: data committed only when every row is clean.
+        // Errors are still persisted so the user can download the error report.
+        data: errors.length === 0 ? valid : [],
         errors,
         rawFile: { buffer: req.file.buffer, originalName: req.file.originalname },
       });
 
       res.json({
         uploadId,
+        success: errors.length === 0,
         totalRows: rows.length,
-        validRows: valid.length,
+        validRows: errors.length === 0 ? valid.length : 0,
         errorRows: errors.length,
         errors: errors.slice(0, 100),
-        data: valid.slice(0, 50),
+        data: errors.length === 0 ? valid.slice(0, 50) : [],
       });
     } catch (err) {
       console.error('Upload error:', err);
