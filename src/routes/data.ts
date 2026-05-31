@@ -8,9 +8,22 @@ import {
   getStats,
 } from '../services/storageService';
 import { generateUnifiedCSV } from '../services/csvService';
+import { AGENT_MAPPING } from '../config/agentMapping';
 import { University } from '../types';
 
 const router = Router();
+
+// GET /api/data/agent-mapping
+// Reference data — agent name ↔ agent ID lookup. Accessible to all
+// authenticated roles (support agents especially need this when preparing
+// calling-data CSVs).
+router.get(
+  '/agent-mapping',
+  authenticateToken,
+  (_req: Request, res: Response): void => {
+    res.json({ agents: AGENT_MAPPING, total: AGENT_MAPPING.length });
+  }
+);
 
 // GET /api/data/student-list
 router.get(

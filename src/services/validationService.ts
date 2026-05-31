@@ -131,14 +131,14 @@ export function validateCallingData(rows: Record<string, string>[], mandatoryCol
   const furtherErrors: ErrorRow[] = [];
 
   result.valid.forEach((row, index) => {
-    const dateStr = row['Scheduled Date'];
+    const dateStr = row['Date ( DD/MM/YYYY)'] || row['Scheduled Date'];
     if (dateStr && dateStr.trim() !== '') {
       furtherValid.push(row);
     } else {
       furtherErrors.push({
         rowNumber: index + 2,
         data: row,
-        errorMessage: 'Scheduled Date is empty or invalid',
+        errorMessage: 'Call date is empty or invalid',
       });
     }
   });

@@ -60,19 +60,25 @@ export const MANDATORY_COLUMNS: Record<string, string[]> = {
     'Overall CGPA',
     'Courses Incomplete',
   ],
+  // Calling data: ALL columns are mandatory (no optional fields).
+  // Names match the GGU calling-data sample CSV exactly.
   'calling-data': [
+    'User ID',
     'Email ID',
     'First Name',
     'Last Name',
-    'Contact',
     'University',
     'Program',
-    'Query Type',
-    'Scheduled Date',
-    'Scheduled Time',
-    'Agent Name',
-    'From',
+    'Cohort #',
+    'Cohort ID',
+    'Status',
+    'Country Of Residence',
+    'Contact',
+    'Date ( DD/MM/YYYY)',
+    'Time ( 24 Hours )',
     'Timezone',
+    'Reason',
+    'Agent ID',
   ],
 };
 

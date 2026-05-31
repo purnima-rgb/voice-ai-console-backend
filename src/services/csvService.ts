@@ -248,17 +248,19 @@ export function generateUnifiedCSV(
     });
 
     const unifiedRow: Record<string, string> = {
-      user_id:      student['User ID']                                          || '',
+      user_id:      student['User ID']     || callingRecord?.['User ID']        || '',
       user_first:   student['First Name']  || callingRecord?.['First Name']     || '',
       user_last:    student['Last Name']   || callingRecord?.['Last Name']      || '',
       user_contact: student['Contact']     || callingRecord?.['Contact']        || '',
+      // 'From' is not present in the current calling data schema — kept in
+      // the unified output for the Voice AI consumer; will be blank.
       from_number:  callingRecord?.['From']                                     || '',
-      user_country: getCountry(student),
-      date_of_call: callingRecord?.['Scheduled Date']                           || '',
-      time_of_call: callingRecord?.['Scheduled Time']                           || '',
+      user_country: getCountry(student)    || callingRecord?.['Country Of Residence'] || '',
+      date_of_call: callingRecord?.['Date ( DD/MM/YYYY)']                       || '',
+      time_of_call: callingRecord?.['Time ( 24 Hours )']                        || '',
       timezone:     callingRecord?.['Timezone']                                 || '',
-      reason:       callingRecord?.['Query Type']                               || '',
-      agent_id:     callingRecord?.['Agent Name']                               || '',
+      reason:       callingRecord?.['Reason']                                   || '',
+      agent_id:     callingRecord?.['Agent ID']                                 || '',
       user_metadata: userMetadata,
     };
 
@@ -277,22 +279,23 @@ export function generateUnifiedCSV(
         Email:      record['Email ID']  || '',
         University: record['University'] || '',
         Program:    record['Program']   || '',
-        Cohort:     '',
-        Status:     '',
+        Cohort:     record['Cohort #']  || '',
+        CohortID:   record['Cohort ID'] || '',
+        Status:     record['Status']    || '',
       });
 
       const unifiedRow: Record<string, string> = {
-        user_id:      '',
-        user_first:   record['First Name']      || '',
-        user_last:    record['Last Name']       || '',
-        user_contact: record['Contact']         || '',
-        from_number:  record['From']            || '',
-        user_country: record['University']      || '',
-        date_of_call: record['Scheduled Date']  || '',
-        time_of_call: record['Scheduled Time']  || '',
-        timezone:     record['Timezone']        || '',
-        reason:       record['Query Type']      || '',
-        agent_id:     record['Agent Name']      || '',
+        user_id:      record['User ID']                  || '',
+        user_first:   record['First Name']               || '',
+        user_last:    record['Last Name']                || '',
+        user_contact: record['Contact']                  || '',
+        from_number:  record['From']                     || '',
+        user_country: record['Country Of Residence']     || '',
+        date_of_call: record['Date ( DD/MM/YYYY)']       || '',
+        time_of_call: record['Time ( 24 Hours )']        || '',
+        timezone:     record['Timezone']                 || '',
+        reason:       record['Reason']                   || '',
+        agent_id:     record['Agent ID']                 || '',
         user_metadata: userMetadata,
       };
       rows.push(unifiedRow);
