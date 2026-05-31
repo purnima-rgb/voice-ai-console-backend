@@ -156,14 +156,23 @@ export async function getGradeSheetData(
   university?: string,
   program?: string
 ): Promise<Record<string, string>[]> {
+  // readAll() returns uploads newest-first (see saveUploadRecord: unshift).
+  // For a given (university, program), the newest upload is authoritative
+  // per student. Dedup by Email (or Email ID fallback) — same semantics as
+  // getStudentData.
   const uploads = readAll()
     .filter((r) => r.dataType === 'grade-sheet')
     .filter((r) => !university || r.university === university)
     .filter((r) => !program || r.program === program);
 
+  const seen = new Set<string>();
   const out: Record<string, string>[] = [];
   for (const upload of uploads) {
     for (const row of upload.rows) {
+      const email = (row['Email'] || row['Email ID'] || '').toLowerCase().trim();
+      if (!email) continue;
+      if (seen.has(email)) continue;
+      seen.add(email);
       out.push({
         ...row,
         University: upload.university || '',

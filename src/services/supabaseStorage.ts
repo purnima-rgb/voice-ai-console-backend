@@ -177,10 +177,18 @@ export async function getGradeSheetData(
   university?: string,
   program?: string
 ): Promise<Record<string, string>[]> {
+  // fetchRowsForDataType returns newest-first; for re-uploads of grade
+  // sheets covering the same students, the latest upload is authoritative.
+  // Dedup by Email — matches getStudentData semantics.
   const { uploads } = await fetchRowsForDataType('grade-sheet', { university, program });
+  const seen = new Set<string>();
   const out: Record<string, string>[] = [];
   for (const upload of uploads) {
     for (const row of upload.rows) {
+      const email = (row['Email'] || row['Email ID'] || '').toLowerCase().trim();
+      if (!email) continue;
+      if (seen.has(email)) continue;
+      seen.add(email);
       out.push({
         ...row,
         University: upload.university || '',
