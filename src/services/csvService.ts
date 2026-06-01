@@ -228,19 +228,45 @@ export function generateUnifiedCSV(
   callingData: Record<string, string>[],
   gradeData: Record<string, string>[] = []
 ): string {
-  // Index student / grade by User ID for O(1) joins on each calling row
-  const indexByUserId = (
-    src: Record<string, string>[]
+  // Index student / grade rows by BOTH User ID AND Email so the join survives
+  // datasets that don't share the same User ID convention. We try User ID
+  // first (the canonical join key), then fall back to Email when no User ID
+  // match is found.
+  const indexBy = (
+    src: Record<string, string>[],
+    keyFn: (r: Record<string, string>) => string
   ): Map<string, Record<string, string>> => {
     const map = new Map<string, Record<string, string>>();
     for (const r of src) {
-      const uid = String(r['User ID'] || '').trim();
-      if (uid) map.set(uid, r);
+      const k = keyFn(r);
+      if (k) map.set(k, r);
     }
     return map;
   };
-  const studentByUserId = indexByUserId(studentData);
-  const gradeByUserId   = indexByUserId(gradeData);
+  const userId   = (r: Record<string, string>) => String(r['User ID'] || '').trim();
+  const email    = (r: Record<string, string>) =>
+    String(r['Email'] || r['Email ID'] || '').toLowerCase().trim();
+
+  const studentByUserId = indexBy(studentData, userId);
+  const studentByEmail  = indexBy(studentData, email);
+  const gradeByUserId   = indexBy(gradeData,   userId);
+  const gradeByEmail    = indexBy(gradeData,   email);
+
+  // For each calling row, prefer User-ID match, then Email match.
+  const lookupStudent = (c: Record<string, string>) => {
+    const uid = userId(c);
+    if (uid && studentByUserId.has(uid)) return studentByUserId.get(uid);
+    const em = email(c);
+    if (em && studentByEmail.has(em)) return studentByEmail.get(em);
+    return undefined;
+  };
+  const lookupGrade = (c: Record<string, string>) => {
+    const uid = userId(c);
+    if (uid && gradeByUserId.has(uid)) return gradeByUserId.get(uid);
+    const em = email(c);
+    if (em && gradeByEmail.has(em)) return gradeByEmail.get(em);
+    return undefined;
+  };
 
   // Drop top-level fields from the student row before merging into metadata
   // (they're already exposed as columns). Also drop join keys to avoid noise.
@@ -286,9 +312,8 @@ export function generateUnifiedCSV(
   const rows: Record<string, string>[] = [];
 
   for (const c of callingData) {
-    const uid     = String(c['User ID'] || '').trim();
-    const student = uid ? studentByUserId.get(uid) : undefined;
-    const grade   = uid ? gradeByUserId.get(uid)   : undefined;
+    const student = lookupStudent(c);
+    const grade   = lookupGrade(c);
 
     rows.push({
       user_id:                   c['User ID']                  || '',
@@ -308,7 +333,18 @@ export function generateUnifiedCSV(
     });
   }
 
-  return rowsToCSV(rows, UNIFIED_CSV_COLUMNS);
+  // Use Excel's text-cell formula syntax for long-digit columns so Excel
+  // doesn't render them in scientific notation (e.g. 9.19877E+11). The
+  // on-disk value becomes  ="918928220913"  ; Excel parses this as a formula
+  // that returns the literal text. Voice AI / pandas consumers that read
+  // CSV strictly will get the formula literal — they should strip the
+  // leading =" and trailing " before use (one-liner: re.sub(r'^="|"$', '', v)).
+  return rowsToCSV(rows, UNIFIED_CSV_COLUMNS, new Set([
+    'user_id',
+    'user_contact',
+    'from_number',
+    'agent_id',
+  ]));
 }
 
 export function generateErrorReport(errorRows: ErrorRow[]): string {
@@ -338,10 +374,20 @@ export function generateErrorReport(errorRows: ErrorRow[]): string {
   return rowsToCSV(rows, columns);
 }
 
-function rowsToCSV(rows: Record<string, string>[], columns: string[]): string {
+function rowsToCSV(
+  rows: Record<string, string>[],
+  columns: string[],
+  textCols?: Set<string>
+): string {
   const header = columns.map(escapeCSVValue).join(',');
   const dataRows = rows.map((row) =>
-    columns.map((col) => escapeCSVValue(row[col] || '')).join(',')
+    columns
+      .map((col) => {
+        const v = row[col] || '';
+        if (v && textCols?.has(col)) return excelTextCell(v);
+        return escapeCSVValue(v);
+      })
+      .join(',')
   );
   return [header, ...dataRows].join('\n');
 }
@@ -352,4 +398,15 @@ function escapeCSVValue(value: string): string {
     return `"${str.replace(/"/g, '""')}"`;
   }
   return str;
+}
+
+/**
+ * Excel text-cell formula:  ="918928220913"
+ * Forces Excel to display long digit strings as TEXT instead of scientific
+ * notation. CSV-escaped on disk as  "=""918928220913"""
+ * Voice AI / pandas consumers should strip the leading =" and trailing "
+ * before use — one-liner:  re.sub(r'^="(.+)"$', r'\1', val)
+ */
+function excelTextCell(v: string): string {
+  return `"=""${v.replace(/"/g, '""')}"""`;
 }
