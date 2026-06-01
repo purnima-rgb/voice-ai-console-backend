@@ -311,6 +311,118 @@ export function generateUnifiedCSV(
 
   const rows: Record<string, string>[] = [];
 
+  /**
+   * Voice AI scheduler date format: M/D/YY (US, single-digit allowed).
+   * Accepts the common input formats and normalizes:
+   *   01-06-2026, 01/06/2026 (DD-MM-YYYY)  → 6/1/26
+   *   6/1/26, 6/1/2026, 6-1-26 (M/D/YY[YY]) → 6/1/26  (already-normalized)
+   *   2026-06-01 (ISO YYYY-MM-DD)           → 6/1/26
+   */
+  const normalizeCallDate = (s: string): string => {
+    if (!s) return '';
+    const trimmed = s.trim();
+
+    // ISO yyyy-mm-dd
+    const iso = trimmed.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);
+    if (iso) {
+      const y = parseInt(iso[1], 10), m = parseInt(iso[2], 10), d = parseInt(iso[3], 10);
+      return `${m}/${d}/${String(y).slice(-2)}`;
+    }
+    // Generic n-n-n or n/n/n
+    const m = trimmed.match(/^(\d{1,4})[-/](\d{1,2})[-/](\d{1,4})$/);
+    if (m) {
+      let a = parseInt(m[1], 10), b = parseInt(m[2], 10), c = parseInt(m[3], 10);
+      let day: number, month: number, year: number;
+      if (a > 31) {
+        // YYYY-MM-DD style with non-dash separators
+        year = a; month = b; day = c;
+      } else if (c > 31 || c >= 100) {
+        // n-n-YYYY — assume DD-MM-YYYY (user's input format) unless first > 12
+        year = c;
+        if (a > 12) { day = a; month = b; }
+        else if (b > 12) { day = b; month = a; }
+        else { day = a; month = b; } // ambiguous — trust DD-MM as input convention
+      } else {
+        // M/D/YY (already in target form)
+        month = a; day = b; year = c < 100 ? 2000 + c : c;
+      }
+      if (year < 100) year += 2000;
+      return `${month}/${day}/${String(year).slice(-2)}`;
+    }
+    return trimmed;
+  };
+
+  /**
+   * Voice AI scheduler expects IANA timezone identifiers (e.g. Asia/Kolkata)
+   * rather than UTC offsets — offsets don't account for daylight saving so
+   * most schedulers reject them. Map common abbreviations + offsets we see
+   * in GGU calling data; passthrough if already IANA (contains a slash).
+   */
+  const normalizeTimezone = (s: string): string => {
+    if (!s) return '';
+    const t = s.trim();
+    if (t.includes('/')) return t; // already IANA (Asia/Kolkata, etc.)
+    const upper = t.toUpperCase().replace(/\s+/g, '');
+    const TZ: Record<string, string> = {
+      // India
+      'IST':        'Asia/Kolkata',
+      'GMT+5:30':   'Asia/Kolkata',
+      'GMT+05:30':  'Asia/Kolkata',
+      'UTC+5:30':   'Asia/Kolkata',
+      'UTC+05:30':  'Asia/Kolkata',
+      '+5:30':      'Asia/Kolkata',
+      '+05:30':     'Asia/Kolkata',
+      // Singapore / Malaysia / HK / China
+      'SGT':        'Asia/Singapore',
+      'GMT+8':      'Asia/Singapore',
+      'GMT+08':     'Asia/Singapore',
+      'GMT+08:00':  'Asia/Singapore',
+      'HKT':        'Asia/Hong_Kong',
+      'CST':        'Asia/Shanghai',  // China Std Time (overrides US CST below)
+      // Vietnam / Thailand / Indonesia
+      'ICT':        'Asia/Bangkok',
+      'GMT+7':      'Asia/Bangkok',
+      'GMT+07':     'Asia/Bangkok',
+      'GMT+07:00':  'Asia/Bangkok',
+      // Middle East
+      'GST':        'Asia/Dubai',
+      'GMT+4':      'Asia/Dubai',
+      'GMT+04':     'Asia/Dubai',
+      'GMT+3':      'Asia/Riyadh',
+      // Europe
+      'GMT':        'Europe/London',
+      'GMT+0':      'Europe/London',
+      'UTC':        'Europe/London',
+      'BST':        'Europe/London',
+      'CET':        'Europe/Paris',
+      'CEST':       'Europe/Paris',
+      'GMT+1':      'Europe/Paris',
+      'GMT+01':     'Europe/Paris',
+      'GMT+01:00':  'Europe/Paris',
+      'GMT+2':      'Europe/Athens',
+      // Americas
+      'EST':        'America/New_York',
+      'EDT':        'America/New_York',
+      'GMT-5':      'America/New_York',
+      'GMT-4':      'America/New_York',
+      'PST':        'America/Los_Angeles',
+      'PDT':        'America/Los_Angeles',
+      'GMT-8':      'America/Los_Angeles',
+      'GMT-7':      'America/Los_Angeles',
+      'MST':        'America/Denver',
+      'MDT':        'America/Denver',
+      'GMT-6':      'America/Chicago',
+      'GMT-2:30':   'America/St_Johns',
+      'GMT-3:30':   'America/St_Johns',
+      // Australia
+      'AEST':       'Australia/Sydney',
+      'AEDT':       'Australia/Sydney',
+      'GMT+10':     'Australia/Sydney',
+      'GMT+11':     'Australia/Sydney',
+    };
+    return TZ[upper] || t; // unknown → pass through; scheduler will surface it
+  };
+
   for (const c of callingData) {
     const student = lookupStudent(c);
     const grade   = lookupGrade(c);
@@ -327,9 +439,9 @@ export function generateUnifiedCSV(
         c['user_country_of_residence'] ||
         getCountry(c) ||
         (student ? getCountry(student) : ''),
-      date_of_call:              c['date_of_call'] || c['Date ( DD/MM/YYYY)'] || '',
+      date_of_call:              normalizeCallDate(c['date_of_call'] || c['Date ( DD/MM/YYYY)'] || ''),
       time_of_call:              c['time_of_call'] || c['Time ( 24 Hours )']  || '',
-      timezone:                  c['timezone']     || c['Timezone']           || '',
+      timezone:                  normalizeTimezone(c['timezone'] || c['Timezone'] || ''),
       reason:                    c['reason']       || c['Reason']             || '',
       agent_id:                  c['agent_id']     || c['Agent ID']           || '',
       user_metadata:             buildMetadata(student, grade),
