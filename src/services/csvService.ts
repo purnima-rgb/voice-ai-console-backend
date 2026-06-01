@@ -336,18 +336,14 @@ export function generateUnifiedCSV(
     });
   }
 
-  // Use Excel's text-cell formula syntax for long-digit columns so Excel
-  // doesn't render them in scientific notation (e.g. 9.19877E+11). The
-  // on-disk value becomes  ="918928220913"  ; Excel parses this as a formula
-  // that returns the literal text. Voice AI / pandas consumers that read
-  // CSV strictly will get the formula literal — they should strip the
-  // leading =" and trailing " before use (one-liner: re.sub(r'^="|"$', '', v)).
-  return rowsToCSV(rows, UNIFIED_CSV_COLUMNS, new Set([
-    'user_id',
-    'user_contact',
-    'from_number',
-    'agent_id',
-  ]));
+  // Plain CSV — no Excel text-cell formulas. Long digit strings will look
+  // like scientific notation in Excel's default open view, but the underlying
+  // bytes are correct and downstream consumers (the Voice AI agent console,
+  // pandas, any CSV reader) get the raw string values they expect.
+  // To view this file properly in Excel: use Data → From Text/CSV and mark
+  // the long-number columns as Text in the import wizard. Or open in Numbers
+  // / a code editor / Google Sheets, all of which preserve the values.
+  return rowsToCSV(rows, UNIFIED_CSV_COLUMNS);
 }
 
 export function generateErrorReport(errorRows: ErrorRow[]): string {
