@@ -442,7 +442,13 @@ export function generateUnifiedCSV(
       date_of_call:              normalizeCallDate(c['date_of_call'] || c['Date ( DD/MM/YYYY)'] || ''),
       time_of_call:              c['time_of_call'] || c['Time ( 24 Hours )']  || '',
       timezone:                  normalizeTimezone(c['timezone'] || c['Timezone'] || ''),
-      reason:                    c['reason']       || c['Reason']             || '',
+      // Per the calling_data.xlsx spec, `reason` in the unified output is
+      // left blank — the scheduler routes by `agent_id` and looks up the
+      // human-readable agent name (e.g. "Grade Dispute Agent") from its own
+      // agent registry. Putting the same name back into `reason` was causing
+      // the scheduler to mark calls as 'skipped'. Raw upload row still has
+      // the input reason; only the unified output suppresses it.
+      reason:                    '',
       agent_id:                  c['agent_id']     || c['Agent ID']           || '',
       user_metadata:             buildMetadata(student, grade),
     });
