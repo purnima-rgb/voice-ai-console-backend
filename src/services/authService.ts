@@ -1,8 +1,29 @@
 import bcrypt from 'bcryptjs';
 import { User, UserRole } from '../types';
 
-// Hardcoded users for local development
+// User accounts. Hardcoded until we move to a DB-backed user table.
+//
+// To add a new client user:
+//   1. Append an entry below with a unique id, email, name, and role
+//      ('system_admin' | 'data_manager' | 'support_agent')
+//   2. Choose a password they'll change on first login (none of the UI
+//      changes-password yet — for now, just share the default with them)
+//   3. Commit + push + redeploy backend
+//
+// Demo accounts (admin@voiceai.com, manager@voiceai.com, agent@voiceai.com)
+// are kept for QA / smoke testing. Remove them before production handoff
+// if the client wants demo logins disabled.
 const USERS: User[] = [
+  // ─── Client users (upGrad) ─────────────────────────────────────────
+  {
+    id: '100',
+    email: 'swaroop.mendon@upgrad.com',
+    name: 'Swaroop Mendon',
+    role: 'system_admin',
+    passwordHash: bcrypt.hashSync('Swaroop@2026', 10),
+  },
+
+  // ─── Demo / QA accounts ────────────────────────────────────────────
   {
     id: '1',
     email: 'admin@voiceai.com',
