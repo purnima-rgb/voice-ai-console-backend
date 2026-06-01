@@ -15,6 +15,7 @@ import {
   getUploadErrors,
   getStudentData,
   getGradeSheetData,
+  getRawFile,
 } from '../services/storageService';
 import { MANDATORY_COLUMNS } from '../config/constants';
 import { University } from '../types';
@@ -290,6 +291,48 @@ router.get(
     } catch (err) {
       console.error('Error report fetch failed:', err);
       res.status(500).json({ error: 'Failed to fetch error report', details: String(err) });
+    }
+  }
+);
+
+// GET /api/upload/raw-file/:uploadId
+// Download the original uploaded file (CSV / XLSX) that the client sent.
+// File is fetched from the Supabase Storage 'raw-uploads' bucket in
+// production; local-dev file-storage fallback returns it from the inline
+// base64 in ./data/uploads.json.
+router.get(
+  '/raw-file/:uploadId',
+  authenticateToken,
+  async (req: Request, res: Response): Promise<void> => {
+    const { uploadId } = req.params;
+
+    try {
+      const record = await getUploadRecord(uploadId);
+      if (!record) {
+        res.status(404).json({ error: 'Upload record not found' });
+        return;
+      }
+      // Support agents can only download their own raw files
+      if (req.user?.role === 'support_agent' && record.uploadedBy !== req.user.email) {
+        res.status(403).json({ error: 'Forbidden' });
+        return;
+      }
+
+      const file = await getRawFile(uploadId);
+      if (!file) {
+        res.status(404).json({
+          error: 'Raw file not stored for this upload',
+          hint:  'Older uploads (before the raw-file bucket was introduced) may not have a stored original.',
+        });
+        return;
+      }
+
+      res.setHeader('Content-Type', file.mime);
+      res.setHeader('Content-Disposition', `attachment; filename="${file.fileName}"`);
+      res.send(file.buffer);
+    } catch (err) {
+      console.error('Raw-file fetch failed:', err);
+      res.status(500).json({ error: 'Failed to fetch raw file', details: String(err) });
     }
   }
 );

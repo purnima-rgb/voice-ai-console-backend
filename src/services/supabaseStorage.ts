@@ -2,11 +2,11 @@ import { getSupabase, UPLOADS_TABLE } from '../lib/supabase';
 import { UploadRecord, ErrorRow, DataType, University } from '../types';
 
 /**
- * Maximum raw file size we'll store inline (as base64 text) in the uploads
- * table. Anything larger gets stored as null in raw_file_b64. For very large
- * files, switch to Supabase Storage and store a path instead.
+ * Bucket in Supabase Storage where every uploaded raw file lives.
+ * Created by migrations/003_raw_file_storage.sql.
+ * Private — only the service-role key (used by this backend) can read/write.
  */
-const MAX_INLINE_RAW_BYTES = 8 * 1024 * 1024; // 8 MB
+const RAW_FILES_BUCKET = 'raw-uploads';
 
 interface DBUpload {
   upload_id: string;
@@ -16,7 +16,10 @@ interface DBUpload {
   file_name: string;
   file_size_bytes: number;
   file_ext: string;
+  /** Legacy inline base64 (kept for older rows; nulled on new inserts). */
   raw_file_b64: string | null;
+  /** Path inside the raw-uploads Storage bucket. Set on every new upload. */
+  raw_file_path: string | null;
   uploaded_by: string;
   uploaded_at: string;
   total_rows: number;
@@ -27,6 +30,43 @@ interface DBUpload {
   errors: ErrorRow[];
   /** Generated unified Voice-AI CSV (calling-data uploads only). */
   unified_csv?: string | null;
+}
+
+/** MIME types accepted by the raw-uploads bucket. Match the multer fileFilter. */
+function mimeForExt(ext: string): string {
+  switch (ext.toLowerCase()) {
+    case 'csv':  return 'text/csv';
+    case 'xls':  return 'application/vnd.ms-excel';
+    case 'xlsx': return 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+    default:     return 'application/octet-stream';
+  }
+}
+
+/**
+ * Upload the raw file bytes to the Storage bucket. Returns the bucket path.
+ * Path layout: <data-type>/<upload-id>-<sanitized-filename>
+ */
+async function uploadRawToBucket(
+  uploadId: string,
+  dataType: DataType,
+  originalName: string,
+  buffer: Buffer
+): Promise<string> {
+  const safeName = originalName.replace(/[^a-zA-Z0-9._-]+/g, '_');
+  const path = `${dataType}/${uploadId}-${safeName}`;
+  const ext = (originalName.split('.').pop() || 'csv').toLowerCase();
+
+  const { error } = await getSupabase()
+    .storage
+    .from(RAW_FILES_BUCKET)
+    .upload(path, buffer, {
+      contentType: mimeForExt(ext),
+      upsert: false,
+    });
+  if (error) {
+    throw new Error(`Supabase storage upload failed: ${error.message}`);
+  }
+  return path;
 }
 
 function rowToUploadRecord(r: DBUpload): UploadRecord {
@@ -66,10 +106,13 @@ export async function saveUploadRecord(input: SaveUploadInput): Promise<void> {
   const { uploadId, metadata, data, errors, rawFile, unifiedCsv } = input;
 
   const fileExt = (rawFile.originalName.split('.').pop() || 'csv').toLowerCase();
-  const rawB64 =
-    rawFile.buffer.length <= MAX_INLINE_RAW_BYTES
-      ? rawFile.buffer.toString('base64')
-      : null;
+
+  // 1. Push the raw bytes into Supabase Storage. Done BEFORE the DB insert
+  //    so a Storage failure leaves the row absent (we don't end up with a
+  //    DB record pointing at a non-existent file).
+  const rawFilePath = await uploadRawToBucket(
+    uploadId, metadata.dataType, rawFile.originalName, rawFile.buffer
+  );
 
   const row: DBUpload = {
     upload_id: uploadId,
@@ -79,7 +122,11 @@ export async function saveUploadRecord(input: SaveUploadInput): Promise<void> {
     file_name: rawFile.originalName,
     file_size_bytes: rawFile.buffer.length,
     file_ext: fileExt,
-    raw_file_b64: rawB64,
+    // Legacy inline base64 is no longer populated — the bucket is the
+    // canonical store. Older rows still in the DB keep their b64 and are
+    // served by the read path below.
+    raw_file_b64: null,
+    raw_file_path: rawFilePath,
     uploaded_by: metadata.uploadedBy,
     uploaded_at: metadata.uploadedAt,
     total_rows: metadata.totalRows,
@@ -93,8 +140,51 @@ export async function saveUploadRecord(input: SaveUploadInput): Promise<void> {
 
   const { error } = await getSupabase().from(UPLOADS_TABLE).insert(row);
   if (error) {
+    // Best-effort cleanup: try to remove the orphaned file so retries don't
+    // collide on the path. Ignore cleanup errors.
+    await getSupabase().storage.from(RAW_FILES_BUCKET).remove([rawFilePath]).catch(() => undefined);
     throw new Error(`Supabase insert failed: ${error.message}`);
   }
+}
+
+/**
+ * Fetch the original raw uploaded file. Prefers the Storage bucket; falls
+ * back to the legacy inline base64 column for rows uploaded before 003.
+ * Returns null when no file was stored.
+ */
+export async function getRawFile(
+  uploadId: string
+): Promise<{ buffer: Buffer; fileName: string; mime: string } | null> {
+  const { data, error } = await getSupabase()
+    .from(UPLOADS_TABLE)
+    .select('raw_file_path, raw_file_b64, file_name, file_ext')
+    .eq('upload_id', uploadId)
+    .maybeSingle();
+  if (error) throw new Error(`Supabase select failed: ${error.message}`);
+  if (!data) return null;
+
+  const fileName = (data as { file_name?: string }).file_name || `upload-${uploadId}`;
+  const fileExt  = (data as { file_ext?: string }).file_ext || 'bin';
+  const mime     = mimeForExt(fileExt);
+
+  // Prefer the bucket
+  const path = (data as { raw_file_path?: string | null }).raw_file_path;
+  if (path) {
+    const dl = await getSupabase().storage.from(RAW_FILES_BUCKET).download(path);
+    if (dl.error || !dl.data) {
+      console.error('Storage download failed:', dl.error?.message);
+      return null;
+    }
+    const buf = Buffer.from(await dl.data.arrayBuffer());
+    return { buffer: buf, fileName, mime };
+  }
+
+  // Legacy fallback
+  const b64 = (data as { raw_file_b64?: string | null }).raw_file_b64;
+  if (b64) {
+    return { buffer: Buffer.from(b64, 'base64'), fileName, mime };
+  }
+  return null;
 }
 
 export async function getUploadRecord(uploadId: string): Promise<UploadRecord | null> {

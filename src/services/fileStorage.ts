@@ -118,6 +118,27 @@ export async function getUnifiedCsv(uploadId: string): Promise<string | null> {
   return readAll().find((r) => r.uploadId === uploadId)?.unifiedCsv ?? null;
 }
 
+/** Reconstruct the raw uploaded file from the inline base64 stored in JSON. */
+export async function getRawFile(
+  uploadId: string
+): Promise<{ buffer: Buffer; fileName: string; mime: string } | null> {
+  const rec = readAll().find((r) => r.uploadId === uploadId);
+  if (!rec || !rec.rawFileB64) return null;
+  const mimeForExt = (ext: string): string => {
+    switch (ext.toLowerCase()) {
+      case 'csv':  return 'text/csv';
+      case 'xls':  return 'application/vnd.ms-excel';
+      case 'xlsx': return 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+      default:     return 'application/octet-stream';
+    }
+  };
+  return {
+    buffer: Buffer.from(rec.rawFileB64, 'base64'),
+    fileName: rec.fileName,
+    mime: mimeForExt(rec.fileExt || 'bin'),
+  };
+}
+
 export async function listUploads(filters?: {
   dataType?: DataType;
   university?: University;
