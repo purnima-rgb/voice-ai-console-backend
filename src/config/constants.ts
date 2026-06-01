@@ -62,6 +62,8 @@ export const MANDATORY_COLUMNS: Record<string, string[]> = {
   ],
   // Calling data: ALL columns are mandatory (no optional fields).
   // Names match the GGU calling-data sample CSV exactly.
+  // Calling-data column names now match the unified-output naming directly
+  // (user_contact, from_number, date_of_call, …). All mandatory.
   'calling-data': [
     'User ID',
     'Email ID',
@@ -72,13 +74,14 @@ export const MANDATORY_COLUMNS: Record<string, string[]> = {
     'Cohort #',
     'Cohort ID',
     'Status',
-    'Country Of Residence',
-    'Contact',
-    'Date ( DD/MM/YYYY)',
-    'Time ( 24 Hours )',
-    'Timezone',
-    'Reason',
-    'Agent ID',
+    'user_country_of_residence',
+    'user_contact',
+    'from_number',
+    'date_of_call',
+    'time_of_call',
+    'timezone',
+    'reason',
+    'agent_id',
   ],
 };
 

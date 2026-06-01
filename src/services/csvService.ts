@@ -319,16 +319,19 @@ export function generateUnifiedCSV(
       user_id:                   c['User ID']                  || '',
       user_first_name:           c['First Name']               || '',
       user_last_name:            c['Last Name']                || '',
-      user_contact:              c['Contact']                  || '',
-      // No 'From' column in current calling-data schema → blank.
-      from_number:               c['From']                     || '',
-      // Prefer the calling row's country; fall back to the student row.
-      user_country_of_residence: getCountry(c) || (student ? getCountry(student) : ''),
-      date_of_call:              c['Date ( DD/MM/YYYY)']       || '',
-      time_of_call:              c['Time ( 24 Hours )']        || '',
-      timezone:                  c['Timezone']                 || '',
-      reason:                    c['Reason']                   || '',
-      agent_id:                  c['Agent ID']                 || '',
+      // Source columns now match the unified-output naming, but fall back to
+      // older header spellings so previously-uploaded files still resolve.
+      user_contact:              c['user_contact']             || c['Contact'] || '',
+      from_number:               c['from_number']              || c['From']    || '',
+      user_country_of_residence:
+        c['user_country_of_residence'] ||
+        getCountry(c) ||
+        (student ? getCountry(student) : ''),
+      date_of_call:              c['date_of_call'] || c['Date ( DD/MM/YYYY)'] || '',
+      time_of_call:              c['time_of_call'] || c['Time ( 24 Hours )']  || '',
+      timezone:                  c['timezone']     || c['Timezone']           || '',
+      reason:                    c['reason']       || c['Reason']             || '',
+      agent_id:                  c['agent_id']     || c['Agent ID']           || '',
       user_metadata:             buildMetadata(student, grade),
     });
   }

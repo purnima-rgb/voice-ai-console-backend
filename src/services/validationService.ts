@@ -131,14 +131,19 @@ export function validateCallingData(rows: Record<string, string>[], mandatoryCol
   const furtherErrors: ErrorRow[] = [];
 
   result.valid.forEach((row, index) => {
-    const dateStr = row['Date ( DD/MM/YYYY)'] || row['Scheduled Date'];
-    if (dateStr && dateStr.trim() !== '') {
+    // New schema uses lowercase 'date_of_call'; tolerate the older spellings.
+    const dateStr =
+      row['date_of_call'] ||
+      row['Date ( DD/MM/YYYY)'] ||
+      row['Scheduled Date'] ||
+      '';
+    if (dateStr.trim() !== '') {
       furtherValid.push(row);
     } else {
       furtherErrors.push({
         rowNumber: index + 2,
         data: row,
-        errorMessage: 'Call date is empty or invalid',
+        errorMessage: 'date_of_call is empty or invalid',
       });
     }
   });
