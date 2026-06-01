@@ -204,6 +204,91 @@ export function parseGradesheetCSV(filePath: string): Record<string, string>[] {
 }
 
 /**
+ * Convert "M/D/YY" or "M/D/YYYY" → Excel date serial (days since 1900-01-01,
+ * with the 1900-Feb-29 leap-year bug baked in via the standard +25569 offset).
+ */
+function mdYyToExcelSerial(s: string): number | null {
+  const m = s.trim().match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})$/);
+  if (!m) return null;
+  const month = parseInt(m[1], 10);
+  const day   = parseInt(m[2], 10);
+  let year    = parseInt(m[3], 10);
+  if (year < 100) year += 2000;
+  return Math.floor(Date.UTC(year, month - 1, day) / 86_400_000) + 25569;
+}
+
+/**
+ * Convert "H:MM" or "H:MM:SS" → fraction of a day (Excel time representation).
+ */
+function timeStringToFraction(s: string): number | null {
+  const m = s.trim().match(/^(\d{1,2}):(\d{2})(?::(\d{2}))?$/);
+  if (!m) return null;
+  const h  = parseInt(m[1], 10);
+  const mm = parseInt(m[2], 10);
+  const ss = m[3] ? parseInt(m[3], 10) : 0;
+  return (h * 3600 + mm * 60 + ss) / 86_400;
+}
+
+/**
+ * Take a previously-generated unified CSV string and produce an .xlsx with
+ * date_of_call + time_of_call cells stored as proper Excel number types
+ * (t='n' with format codes 'm/d/yy' / 'h:mm') so the Voice AI scheduler's
+ * Excel parser can compute the wall-clock call time. All other columns stay
+ * as plain text — matches the working calling_data (1).xlsx exactly.
+ */
+export function unifiedCsvToXlsxBuffer(csvContent: string): Buffer {
+  const records = parse(csvContent, {
+    columns: true,
+    skip_empty_lines: true,
+    trim: false,
+    relax_quotes: true,
+    relax_column_count: true,
+  }) as Record<string, string>[];
+
+  // aoa: header row + data rows in canonical UNIFIED_CSV_COLUMNS order
+  const aoa: (string | number)[][] = [UNIFIED_CSV_COLUMNS.slice()];
+  for (const rec of records) {
+    aoa.push(UNIFIED_CSV_COLUMNS.map((col) => rec[col] ?? ''));
+  }
+
+  const ws = XLSX.utils.aoa_to_sheet(aoa);
+
+  // Upgrade the date_of_call and time_of_call columns to numeric Excel types
+  const dateColIdx = UNIFIED_CSV_COLUMNS.indexOf('date_of_call');
+  const timeColIdx = UNIFIED_CSV_COLUMNS.indexOf('time_of_call');
+  for (let r = 1; r <= records.length; r++) {
+    if (dateColIdx >= 0) {
+      const addr = XLSX.utils.encode_cell({ c: dateColIdx, r });
+      const cell = ws[addr];
+      if (cell && typeof cell.v === 'string') {
+        const serial = mdYyToExcelSerial(cell.v);
+        if (serial !== null) {
+          cell.t = 'n';
+          cell.v = serial;
+          cell.z = 'm/d/yy';
+        }
+      }
+    }
+    if (timeColIdx >= 0) {
+      const addr = XLSX.utils.encode_cell({ c: timeColIdx, r });
+      const cell = ws[addr];
+      if (cell && typeof cell.v === 'string') {
+        const frac = timeStringToFraction(cell.v);
+        if (frac !== null) {
+          cell.t = 'n';
+          cell.v = frac;
+          cell.z = 'h:mm';
+        }
+      }
+    }
+  }
+
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, 'Sheet1');
+  return XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' }) as Buffer;
+}
+
+/**
  * Build the Voice AI unified-input CSV.
  *
  * One row per calling-data record. Each row carries the 11 top-level fields

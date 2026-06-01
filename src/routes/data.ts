@@ -9,7 +9,7 @@ import {
   getUploadRecord,
   getUnifiedCsv,
 } from '../services/storageService';
-import { generateUnifiedCSV } from '../services/csvService';
+import { generateUnifiedCSV, unifiedCsvToXlsxBuffer } from '../services/csvService';
 import { AGENT_MAPPING } from '../config/agentMapping';
 import { University } from '../types';
 
@@ -83,6 +83,32 @@ router.get(
   }
 );
 
+/**
+ * Common helper: load the immutable per-upload unified CSV snapshot from
+ * storage, with auth + role checks. Throws an HTTP-ready error (already
+ * res.json'd) and returns null when the caller should bail.
+ */
+async function loadUnifiedSnapshot(
+  req: Request, res: Response, uploadId: string
+): Promise<{ csv: string; record: NonNullable<Awaited<ReturnType<typeof getUploadRecord>>> } | null> {
+  const record = await getUploadRecord(uploadId);
+  if (!record) { res.status(404).json({ error: 'Upload record not found' }); return null; }
+  if (record.dataType !== 'calling-data') {
+    res.status(400).json({ error: 'Unified file is only generated for calling-data uploads' });
+    return null;
+  }
+  if (req.user?.role === 'support_agent' && record.uploadedBy !== req.user.email) {
+    res.status(403).json({ error: 'Forbidden' });
+    return null;
+  }
+  const csv = await getUnifiedCsv(uploadId);
+  if (!csv) {
+    res.status(404).json({ error: 'No unified file stored for this upload (was the upload rejected?)' });
+    return null;
+  }
+  return { csv, record };
+}
+
 // GET /api/data/unified-csv/:uploadId
 // Download the immutable unified CSV snapshot that was generated when a
 // specific calling-data upload landed. Each calling-data upload has its own
@@ -93,29 +119,9 @@ router.get(
   async (req: Request, res: Response): Promise<void> => {
     const { uploadId } = req.params;
     try {
-      const record = await getUploadRecord(uploadId);
-      if (!record) {
-        res.status(404).json({ error: 'Upload record not found' });
-        return;
-      }
-      if (record.dataType !== 'calling-data') {
-        res.status(400).json({ error: 'Unified CSV is only generated for calling-data uploads' });
-        return;
-      }
-
-      // Support agents can only download their own uploads' snapshots
-      if (req.user?.role === 'support_agent' && record.uploadedBy !== req.user.email) {
-        res.status(403).json({ error: 'Forbidden' });
-        return;
-      }
-
-      const csv = await getUnifiedCsv(uploadId);
-      if (!csv) {
-        res.status(404).json({
-          error: 'No unified CSV stored for this upload (was the upload rejected?)',
-        });
-        return;
-      }
+      const loaded = await loadUnifiedSnapshot(req, res, uploadId);
+      if (!loaded) return;
+      const { csv, record } = loaded;
 
       const safeStamp = record.uploadedAt.replace(/[:.]/g, '-');
       const safeUni   = (record.university || 'all').replace(/[^a-z0-9]/gi, '-');
@@ -128,6 +134,41 @@ router.get(
     } catch (err) {
       console.error('unified-csv fetch failed:', err);
       res.status(500).json({ error: 'Failed to fetch unified CSV', details: String(err) });
+    }
+  }
+);
+
+// GET /api/data/unified-xlsx/:uploadId
+// Same snapshot, served as an .xlsx with date_of_call and time_of_call cells
+// stored as proper Excel number types so the downstream Voice AI scheduler
+// can compute wall-clock call times. THIS is the format that gets calls
+// scheduled (vs marked 'skipped'); see calling_data (1).xlsx for the spec.
+router.get(
+  '/unified-xlsx/:uploadId',
+  authenticateToken,
+  async (req: Request, res: Response): Promise<void> => {
+    const { uploadId } = req.params;
+    try {
+      const loaded = await loadUnifiedSnapshot(req, res, uploadId);
+      if (!loaded) return;
+      const { csv, record } = loaded;
+
+      const buf = unifiedCsvToXlsxBuffer(csv);
+
+      const safeStamp = record.uploadedAt.replace(/[:.]/g, '-');
+      const safeUni   = (record.university || 'all').replace(/[^a-z0-9]/gi, '-');
+      const safeProg  = (record.program    || 'all').replace(/[^a-z0-9]/gi, '-');
+      const fileName  = `unified-voice-ai-${safeUni}-${safeProg}-${safeStamp}.xlsx`;
+
+      res.setHeader(
+        'Content-Type',
+        'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+      );
+      res.setHeader('Content-Disposition', `attachment; filename="${fileName}"`);
+      res.send(buf);
+    } catch (err) {
+      console.error('unified-xlsx fetch failed:', err);
+      res.status(500).json({ error: 'Failed to fetch unified XLSX', details: String(err) });
     }
   }
 );
