@@ -203,103 +203,109 @@ export function parseGradesheetCSV(filePath: string): Record<string, string>[] {
   return parseGradesheetCSVString(fs.readFileSync(filePath, 'utf-8'));
 }
 
+/**
+ * Build the Voice AI unified-input CSV.
+ *
+ * One row per calling-data record. Each row carries the 11 top-level fields
+ * (user_id, user_first_name, …, agent_id) sourced from the calling data,
+ * plus a flat JSON `user_metadata` blob built by merging:
+ *
+ *   • The matching student-list row (joined on User ID)
+ *   • The matching grade-sheet row    (joined on User ID)
+ *
+ * Duplicate metadata keys (e.g. Email, Cohort ID, Batch, Status, First/Last
+ * Name appearing in both student list and grade sheet) get a ".1" suffix
+ * on the grade-sheet copy — matches the pandas-style merge output the
+ * Voice AI consumer expects.
+ *
+ * Course Grade/GPA headers — the parser emits "<Course> - Grade", but the
+ * downstream Voice AI spec expects "<Course> Grade" (no dash). We strip
+ * the dash here when flattening into user_metadata so the displayed View
+ * Data tab stays readable while the unified output matches spec exactly.
+ */
 export function generateUnifiedCSV(
   studentData: Record<string, string>[],
-  callingData: Record<string, string>[]
+  callingData: Record<string, string>[],
+  gradeData: Record<string, string>[] = []
 ): string {
-  // Build a lookup map for calling data by Email ID
-  const callingMap = new Map<string, Record<string, string>>();
-  for (const record of callingData) {
-    const email = (record['Email ID'] || '').toLowerCase().trim();
-    if (email) {
-      callingMap.set(email, record);
+  // Index student / grade by User ID for O(1) joins on each calling row
+  const indexByUserId = (
+    src: Record<string, string>[]
+  ): Map<string, Record<string, string>> => {
+    const map = new Map<string, Record<string, string>>();
+    for (const r of src) {
+      const uid = String(r['User ID'] || '').trim();
+      if (uid) map.set(uid, r);
     }
-  }
+    return map;
+  };
+  const studentByUserId = indexByUserId(studentData);
+  const gradeByUserId   = indexByUserId(gradeData);
+
+  // Drop top-level fields from the student row before merging into metadata
+  // (they're already exposed as columns). Also drop join keys to avoid noise.
+  const STUDENT_DROP = new Set<string>([
+    'User ID', 'First Name', 'Last Name', 'Contact',
+    'Country Of Residence', 'Country of Residence', 'Country of  Residence',
+    'University', 'Program', // tagged automatically by storage layer; redundant
+  ]);
+  const GRADE_DROP = new Set<string>(['User ID']);
+
+  const buildMetadata = (
+    student: Record<string, string> | undefined,
+    grade:   Record<string, string> | undefined
+  ): string => {
+    const meta: Record<string, string> = {};
+
+    if (student) {
+      for (const [k, v] of Object.entries(student)) {
+        if (STUDENT_DROP.has(k)) continue;
+        meta[k] = v ?? '';
+      }
+    }
+    if (grade) {
+      for (const [k, v] of Object.entries(grade)) {
+        if (GRADE_DROP.has(k)) continue;
+        // "<Course> - Grade" → "<Course> Grade" (spec uses no dash)
+        const cleanKey = k.replace(/ - (Grade|GPA)$/i, ' $1');
+        // Suffix ".1" if the key already came from the student row
+        const finalKey = Object.prototype.hasOwnProperty.call(meta, cleanKey)
+          ? `${cleanKey}.1`
+          : cleanKey;
+        meta[finalKey] = v ?? '';
+      }
+    }
+    return JSON.stringify(meta);
+  };
+
+  const getCountry = (r: Record<string, string>): string =>
+    r['Country Of Residence'] ||
+    r['Country of  Residence'] ||
+    r['Country of Residence'] || '';
 
   const rows: Record<string, string>[] = [];
 
-  // Helper: handles both 'Country of  Residence' (two spaces, current CSV format)
-  // and legacy 'Country Of Residence' / 'Country of Residence' variants.
-  const getCountry = (s: Record<string, string>): string =>
-    s['Country of  Residence'] ||
-    s['Country of Residence']  ||
-    s['Country Of Residence']  ||
-    '';
+  for (const c of callingData) {
+    const uid     = String(c['User ID'] || '').trim();
+    const student = uid ? studentByUserId.get(uid) : undefined;
+    const grade   = uid ? gradeByUserId.get(uid)   : undefined;
 
-  // Helper: student CSV uses 'Email', legacy used 'Email ID' — read either.
-  const getStudentEmail = (s: Record<string, string>): string =>
-    (s['Email'] || s['Email ID'] || '').toLowerCase().trim();
-
-  for (const student of studentData) {
-    const email = getStudentEmail(student);
-    const callingRecord = callingMap.get(email);
-
-    const university = callingRecord?.['University'] || student['University'] || '';
-    const program    = callingRecord?.['Program']    || student['Program']    || '';
-
-    const userMetadata = JSON.stringify({
-      Email:       student['Email'] || student['Email ID'] || callingRecord?.['Email ID'] || '',
-      University:  university,
-      Program:     program,
-      Cohort:      student['Cohort #']           || '',
-      Status:      student['Status']             || '',
-      GGU_User_ID: student['GGU User ID']        || '',
-      Region:      student['Region']             || '',
+    rows.push({
+      user_id:                   c['User ID']                  || '',
+      user_first_name:           c['First Name']               || '',
+      user_last_name:            c['Last Name']                || '',
+      user_contact:              c['Contact']                  || '',
+      // No 'From' column in current calling-data schema → blank.
+      from_number:               c['From']                     || '',
+      // Prefer the calling row's country; fall back to the student row.
+      user_country_of_residence: getCountry(c) || (student ? getCountry(student) : ''),
+      date_of_call:              c['Date ( DD/MM/YYYY)']       || '',
+      time_of_call:              c['Time ( 24 Hours )']        || '',
+      timezone:                  c['Timezone']                 || '',
+      reason:                    c['Reason']                   || '',
+      agent_id:                  c['Agent ID']                 || '',
+      user_metadata:             buildMetadata(student, grade),
     });
-
-    const unifiedRow: Record<string, string> = {
-      user_id:      student['User ID']     || callingRecord?.['User ID']        || '',
-      user_first:   student['First Name']  || callingRecord?.['First Name']     || '',
-      user_last:    student['Last Name']   || callingRecord?.['Last Name']      || '',
-      user_contact: student['Contact']     || callingRecord?.['Contact']        || '',
-      // 'From' is not present in the current calling data schema — kept in
-      // the unified output for the Voice AI consumer; will be blank.
-      from_number:  callingRecord?.['From']                                     || '',
-      user_country: getCountry(student)    || callingRecord?.['Country Of Residence'] || '',
-      date_of_call: callingRecord?.['Date ( DD/MM/YYYY)']                       || '',
-      time_of_call: callingRecord?.['Time ( 24 Hours )']                        || '',
-      timezone:     callingRecord?.['Timezone']                                 || '',
-      reason:       callingRecord?.['Reason']                                   || '',
-      agent_id:     callingRecord?.['Agent ID']                                 || '',
-      user_metadata: userMetadata,
-    };
-
-    rows.push(unifiedRow);
-  }
-
-  // Also add calling data records that don't have a matching student
-  for (const record of callingData) {
-    const email = (record['Email ID'] || '').toLowerCase().trim();
-    const hasStudent = studentData.some(
-      (s) => getStudentEmail(s) === email
-    );
-
-    if (!hasStudent) {
-      const userMetadata = JSON.stringify({
-        Email:      record['Email ID']  || '',
-        University: record['University'] || '',
-        Program:    record['Program']   || '',
-        Cohort:     record['Cohort #']  || '',
-        CohortID:   record['Cohort ID'] || '',
-        Status:     record['Status']    || '',
-      });
-
-      const unifiedRow: Record<string, string> = {
-        user_id:      record['User ID']                  || '',
-        user_first:   record['First Name']               || '',
-        user_last:    record['Last Name']                || '',
-        user_contact: record['Contact']                  || '',
-        from_number:  record['From']                     || '',
-        user_country: record['Country Of Residence']     || '',
-        date_of_call: record['Date ( DD/MM/YYYY)']       || '',
-        time_of_call: record['Time ( 24 Hours )']        || '',
-        timezone:     record['Timezone']                 || '',
-        reason:       record['Reason']                   || '',
-        agent_id:     record['Agent ID']                 || '',
-        user_metadata: userMetadata,
-      };
-      rows.push(unifiedRow);
-    }
   }
 
   return rowsToCSV(rows, UNIFIED_CSV_COLUMNS);

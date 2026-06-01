@@ -6,6 +6,8 @@ import {
   getCallingData,
   listUploads,
   getStats,
+  getUploadRecord,
+  getUnifiedCsv,
 } from '../services/storageService';
 import { generateUnifiedCSV } from '../services/csvService';
 import { AGENT_MAPPING } from '../config/agentMapping';
@@ -81,25 +83,79 @@ router.get(
   }
 );
 
+// GET /api/data/unified-csv/:uploadId
+// Download the immutable unified CSV snapshot that was generated when a
+// specific calling-data upload landed. Each calling-data upload has its own
+// snapshot — they're never overwritten.
+router.get(
+  '/unified-csv/:uploadId',
+  authenticateToken,
+  async (req: Request, res: Response): Promise<void> => {
+    const { uploadId } = req.params;
+    try {
+      const record = await getUploadRecord(uploadId);
+      if (!record) {
+        res.status(404).json({ error: 'Upload record not found' });
+        return;
+      }
+      if (record.dataType !== 'calling-data') {
+        res.status(400).json({ error: 'Unified CSV is only generated for calling-data uploads' });
+        return;
+      }
+
+      // Support agents can only download their own uploads' snapshots
+      if (req.user?.role === 'support_agent' && record.uploadedBy !== req.user.email) {
+        res.status(403).json({ error: 'Forbidden' });
+        return;
+      }
+
+      const csv = await getUnifiedCsv(uploadId);
+      if (!csv) {
+        res.status(404).json({
+          error: 'No unified CSV stored for this upload (was the upload rejected?)',
+        });
+        return;
+      }
+
+      const safeStamp = record.uploadedAt.replace(/[:.]/g, '-');
+      const safeUni   = (record.university || 'all').replace(/[^a-z0-9]/gi, '-');
+      const safeProg  = (record.program    || 'all').replace(/[^a-z0-9]/gi, '-');
+      const fileName  = `unified-voice-ai-${safeUni}-${safeProg}-${safeStamp}.csv`;
+
+      res.setHeader('Content-Type', 'text/csv');
+      res.setHeader('Content-Disposition', `attachment; filename="${fileName}"`);
+      res.send(csv);
+    } catch (err) {
+      console.error('unified-csv fetch failed:', err);
+      res.status(500).json({ error: 'Failed to fetch unified CSV', details: String(err) });
+    }
+  }
+);
+
 // GET /api/data/unified-csv
+// Legacy aggregate endpoint — generates an on-the-fly unified CSV using
+// ALL current student-list + calling-data + grade-sheet rows in the system.
+// Useful as a "full export" but the per-upload route above is the canonical
+// way to fetch the immutable snapshot tied to a given calling-data upload.
 router.get(
   '/unified-csv',
   authenticateToken,
   requireRole('system_admin', 'data_manager'),
   async (_req: Request, res: Response): Promise<void> => {
     try {
-      const [studentData, callingData] = await Promise.all([
+      const [studentData, callingData, gradeData] = await Promise.all([
         getStudentData(),
         getCallingData(),
+        getGradeSheetData(),
       ]);
 
-      const csvContent = generateUnifiedCSV(studentData, callingData);
+      const csvContent = generateUnifiedCSV(studentData, callingData, gradeData);
 
       const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
       res.setHeader('Content-Type', 'text/csv');
       res.setHeader(
         'Content-Disposition',
-        `attachment; filename="unified-voice-ai-${timestamp}.csv"`
+        `attachment; filename="unified-voice-ai-all-${timestamp}.csv"`
       );
       res.send(csvContent);
     } catch (err) {

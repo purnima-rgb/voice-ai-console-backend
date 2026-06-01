@@ -35,6 +35,8 @@ interface StoredRecord {
   status: 'success' | 'partial' | 'failed';
   rows: Record<string, string>[];
   errors: ErrorRow[];
+  /** Generated unified Voice-AI CSV (calling-data uploads only). */
+  unifiedCsv?: string | null;
 }
 
 function ensureDataDir(): void {
@@ -73,7 +75,7 @@ function toRecord(r: StoredRecord): UploadRecord {
 }
 
 export async function saveUploadRecord(input: SaveUploadInput): Promise<void> {
-  const { uploadId, metadata, data, errors, rawFile } = input;
+  const { uploadId, metadata, data, errors, rawFile, unifiedCsv } = input;
   const fileExt = (rawFile.originalName.split('.').pop() || 'csv').toLowerCase();
   const rawB64 =
     rawFile.buffer.length <= MAX_INLINE_RAW_BYTES
@@ -98,6 +100,7 @@ export async function saveUploadRecord(input: SaveUploadInput): Promise<void> {
     status: metadata.status,
     rows: data,
     errors,
+    unifiedCsv: unifiedCsv ?? null,
   });
   writeAll(all);
 }
@@ -109,6 +112,10 @@ export async function getUploadRecord(uploadId: string): Promise<UploadRecord | 
 
 export async function getUploadErrors(uploadId: string): Promise<ErrorRow[]> {
   return readAll().find((r) => r.uploadId === uploadId)?.errors || [];
+}
+
+export async function getUnifiedCsv(uploadId: string): Promise<string | null> {
+  return readAll().find((r) => r.uploadId === uploadId)?.unifiedCsv ?? null;
 }
 
 export async function listUploads(filters?: {

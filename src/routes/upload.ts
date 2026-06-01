@@ -6,9 +6,16 @@ import {
   parseRowsFromBuffer,
   parseGradesheetFromBuffer,
   generateErrorReport,
+  generateUnifiedCSV,
 } from '../services/csvService';
 import { validateStudentList, validateGradeSheet, validateCallingData } from '../services/validationService';
-import { saveUploadRecord, getUploadRecord, getUploadErrors } from '../services/storageService';
+import {
+  saveUploadRecord,
+  getUploadRecord,
+  getUploadErrors,
+  getStudentData,
+  getGradeSheetData,
+} from '../services/storageService';
 import { MANDATORY_COLUMNS } from '../config/constants';
 import { University } from '../types';
 
@@ -198,6 +205,20 @@ router.post(
       const uploadId = uuidv4();
       const now = new Date().toISOString();
 
+      // On a clean upload, generate the Voice AI unified CSV snapshot
+      // using THIS upload's calling rows + the current student-list and
+      // grade-sheet for the same (university, program). The snapshot is
+      // stored against the upload and never overwritten by later uploads —
+      // each calling-data upload produces its own immutable unified CSV.
+      let unifiedCsv: string | undefined;
+      if (errors.length === 0) {
+        const [studentRows, gradeRows] = await Promise.all([
+          getStudentData(university as string, program as string),
+          getGradeSheetData(university as string, program as string),
+        ]);
+        unifiedCsv = generateUnifiedCSV(studentRows, valid, gradeRows);
+      }
+
       await saveUploadRecord({
         uploadId,
         metadata: {
@@ -218,6 +239,7 @@ router.post(
         data: errors.length === 0 ? valid : [],
         errors,
         rawFile: { buffer: req.file.buffer, originalName: req.file.originalname },
+        unifiedCsv,
       });
 
       res.json({
@@ -228,6 +250,7 @@ router.post(
         errorRows: errors.length,
         errors: errors.slice(0, 100),
         data: errors.length === 0 ? valid.slice(0, 50) : [],
+        unifiedCsvAvailable: unifiedCsv != null,
       });
     } catch (err) {
       console.error('Upload error:', err);

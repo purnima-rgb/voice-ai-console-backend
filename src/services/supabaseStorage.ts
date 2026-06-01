@@ -25,6 +25,8 @@ interface DBUpload {
   status: 'success' | 'partial' | 'failed';
   rows: Record<string, string>[];
   errors: ErrorRow[];
+  /** Generated unified Voice-AI CSV (calling-data uploads only). */
+  unified_csv?: string | null;
 }
 
 function rowToUploadRecord(r: DBUpload): UploadRecord {
@@ -52,10 +54,16 @@ export interface SaveUploadInput {
     buffer: Buffer;
     originalName: string;
   };
+  /**
+   * Optional generated unified CSV string. Set on successful calling-data
+   * uploads so it can be downloaded later (per-upload snapshot — never
+   * overwritten by subsequent uploads).
+   */
+  unifiedCsv?: string;
 }
 
 export async function saveUploadRecord(input: SaveUploadInput): Promise<void> {
-  const { uploadId, metadata, data, errors, rawFile } = input;
+  const { uploadId, metadata, data, errors, rawFile, unifiedCsv } = input;
 
   const fileExt = (rawFile.originalName.split('.').pop() || 'csv').toLowerCase();
   const rawB64 =
@@ -80,6 +88,7 @@ export async function saveUploadRecord(input: SaveUploadInput): Promise<void> {
     status: metadata.status,
     rows: data,
     errors,
+    unified_csv: unifiedCsv ?? null,
   };
 
   const { error } = await getSupabase().from(UPLOADS_TABLE).insert(row);
@@ -106,6 +115,16 @@ export async function getUploadErrors(uploadId: string): Promise<ErrorRow[]> {
     .maybeSingle();
   if (error) throw new Error(`Supabase select failed: ${error.message}`);
   return (data?.errors as ErrorRow[] | undefined) || [];
+}
+
+export async function getUnifiedCsv(uploadId: string): Promise<string | null> {
+  const { data, error } = await getSupabase()
+    .from(UPLOADS_TABLE)
+    .select('unified_csv')
+    .eq('upload_id', uploadId)
+    .maybeSingle();
+  if (error) throw new Error(`Supabase select failed: ${error.message}`);
+  return (data?.unified_csv as string | null | undefined) ?? null;
 }
 
 export async function listUploads(filters?: {

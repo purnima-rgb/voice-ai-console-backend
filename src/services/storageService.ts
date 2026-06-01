@@ -29,6 +29,7 @@ const impl = USE_SUPABASE ? supabaseStorage : fileStorage;
 export const saveUploadRecord  = impl.saveUploadRecord;
 export const getUploadRecord   = impl.getUploadRecord;
 export const getUploadErrors   = impl.getUploadErrors;
+export const getUnifiedCsv     = impl.getUnifiedCsv;
 export const listUploads       = impl.listUploads;
 export const getStudentData    = impl.getStudentData;
 export const getGradeSheetData = impl.getGradeSheetData;

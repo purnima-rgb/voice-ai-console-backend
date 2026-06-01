@@ -84,11 +84,11 @@ export const MANDATORY_COLUMNS: Record<string, string[]> = {
 
 export const UNIFIED_CSV_COLUMNS = [
   'user_id',
-  'user_first',
-  'user_last',
+  'user_first_name',
+  'user_last_name',
   'user_contact',
   'from_number',
-  'user_country',
+  'user_country_of_residence',
   'date_of_call',
   'time_of_call',
   'timezone',
