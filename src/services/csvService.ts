@@ -1,7 +1,7 @@
 import { parse } from 'csv-parse/sync';
 import * as XLSX from 'xlsx';
 import { ErrorRow } from '../types';
-import { UNIFIED_CSV_COLUMNS } from '../config/constants';
+import { UNIFIED_CSV_COLUMNS, VOICE_AI_DEFAULT_AGENT_ID } from '../config/constants';
 import * as fs from 'fs';
 
 /**
@@ -449,7 +449,10 @@ export function generateUnifiedCSV(
       // the scheduler to mark calls as 'skipped'. Raw upload row still has
       // the input reason; only the unified output suppresses it.
       reason:                    '',
-      agent_id:                  c['agent_id']     || c['Agent ID']           || '',
+      // VOICE_AI_DEFAULT_AGENT_ID env var (if set) forces every row to use
+      // a single registered agent — needed while the agent-mapping IDs in
+      // the calling data aren't yet registered in the Voice AI console.
+      agent_id:                  VOICE_AI_DEFAULT_AGENT_ID || c['agent_id'] || c['Agent ID'] || '',
       user_metadata:             buildMetadata(student, grade),
     });
   }
