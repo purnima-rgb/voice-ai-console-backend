@@ -1,0 +1,61 @@
+name: Sync to monorepo
+
+# Mirrors this repo's contents into the backend/ subtree of the
+# DevkraftTechnologies/purnima-voiceai-test monorepo on every push to main.
+# Set the SYNC_PAT secret in repo settings → Secrets and variables →
+# Actions, holding a PAT with `repo` scope (write access to the monorepo).
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch: # allows manual trigger from the Actions tab
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out source (this repo)
+        uses: actions/checkout@v4
+        with:
+          path: source
+
+      - name: Check out target monorepo
+        uses: actions/checkout@v4
+        with:
+          repository: DevkraftTechnologies/purnima-voiceai-test
+          token: ${{ secrets.SYNC_PAT }}
+          path: monorepo
+          fetch-depth: 0
+
+      - name: Mirror source/ into monorepo/backend/
+        run: |
+          rsync -a --delete \
+            --exclude='.git/' \
+            --exclude='.github/' \
+            --exclude='node_modules/' \
+            --exclude='dist/' \
+            --exclude='.vercel/' \
+            --exclude='.env' \
+            --exclude='.env.local' \
+            --exclude='.env.*.local' \
+            --exclude='uploads/' \
+            --exclude='data/uploads.json' \
+            --exclude='data/uploads/' \
+            source/ monorepo/backend/
+
+      - name: Commit & push if anything changed
+        working-directory: monorepo
+        env:
+          SRC_REPO: ${{ github.repository }}
+          SRC_SHA:  ${{ github.sha }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if [ -z "$(git status --porcelain)" ]; then
+            echo "No backend changes to mirror."
+            exit 0
+          fi
+          SHORT=$(echo "$SRC_SHA" | cut -c1-7)
+          git add -A
+          git commit -m "chore(sync): backend/ ← ${SRC_REPO}@${SHORT}"
+          git push origin main
