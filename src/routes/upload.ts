@@ -7,7 +7,9 @@ import {
   parseGradesheetFromBuffer,
   generateErrorReport,
   generateUnifiedCSV,
+  unifiedCsvToXlsxBuffer,
 } from '../services/csvService';
+import { isS3Configured, uploadUnifiedSnapshot } from '../services/s3Storage';
 import { validateStudentList, validateGradeSheet, validateCallingData } from '../services/validationService';
 import {
   saveUploadRecord,
@@ -243,6 +245,29 @@ router.post(
         unifiedCsv,
       });
 
+      // Archive the generated unified files (CSV + scheduler-ready XLSX) to S3
+      // as an immutable per-upload snapshot. Best-effort: a failure here is
+      // logged but does NOT fail the upload — the Supabase-backed snapshot
+      // remains the source of truth and downloads still work.
+      let unifiedArchivedToS3 = false;
+      if (unifiedCsv && isS3Configured()) {
+        try {
+          const xlsxBuffer = unifiedCsvToXlsxBuffer(unifiedCsv);
+          const keys = await uploadUnifiedSnapshot({
+            uploadId,
+            university: university as string,
+            program: program as string,
+            uploadedAt: now,
+            csv: unifiedCsv,
+            xlsx: xlsxBuffer,
+          });
+          unifiedArchivedToS3 = true;
+          console.log(`[s3] archived unified snapshot: ${keys.csvKey}, ${keys.xlsxKey}`);
+        } catch (s3err) {
+          console.error('[s3] unified snapshot archive failed (continuing):', s3err);
+        }
+      }
+
       res.json({
         uploadId,
         success: errors.length === 0,
@@ -252,6 +277,7 @@ router.post(
         errors: errors.slice(0, 100),
         data: errors.length === 0 ? valid.slice(0, 50) : [],
         unifiedCsvAvailable: unifiedCsv != null,
+        unifiedArchivedToS3,
       });
     } catch (err) {
       console.error('Upload error:', err);
