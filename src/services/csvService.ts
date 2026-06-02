@@ -230,11 +230,16 @@ function timeStringToFraction(s: string): number | null {
 }
 
 /**
- * Take a previously-generated unified CSV string and produce an .xlsx with
- * date_of_call + time_of_call cells stored as proper Excel number types
- * (t='n' with format codes 'm/d/yy' / 'h:mm') so the Voice AI scheduler's
- * Excel parser can compute the wall-clock call time. All other columns stay
- * as plain text — matches the working calling_data (1).xlsx exactly.
+ * Take a previously-generated unified CSV string and produce an .xlsx that
+ * byte-for-byte matches the cell typing of the known-good scheduler file
+ * (Copy of calling_data (1).xlsx):
+ *   • date_of_call → t='n', number-format 'M/d/yyyy'  (serial days)
+ *   • time_of_call → t='n', number-format 'h:mm:ss am/pm'  (fraction of day)
+ *   • user_id / user_contact / from_number → t='s', number-format '@' (text)
+ *     so long digit strings never collapse to scientific notation.
+ *   • everything else → plain text (General).
+ * Storing date/time as numbers lets the scheduler's Excel parser compute the
+ * wall-clock call time, which is what makes calls schedule instead of skip.
  */
 export function unifiedCsvToXlsxBuffer(csvContent: string): Buffer {
   const records = parse(csvContent, {
@@ -253,9 +258,14 @@ export function unifiedCsvToXlsxBuffer(csvContent: string): Buffer {
 
   const ws = XLSX.utils.aoa_to_sheet(aoa);
 
-  // Upgrade the date_of_call and time_of_call columns to numeric Excel types
+  // Upgrade the date_of_call and time_of_call columns to numeric Excel types,
+  // and tag the long digit-string columns with an explicit text format ('@')
+  // so they match the working scheduler file exactly.
   const dateColIdx = UNIFIED_CSV_COLUMNS.indexOf('date_of_call');
   const timeColIdx = UNIFIED_CSV_COLUMNS.indexOf('time_of_call');
+  const textColIdxs = ['user_id', 'user_contact', 'from_number']
+    .map((c) => UNIFIED_CSV_COLUMNS.indexOf(c))
+    .filter((i) => i >= 0);
   for (let r = 1; r <= records.length; r++) {
     if (dateColIdx >= 0) {
       const addr = XLSX.utils.encode_cell({ c: dateColIdx, r });
@@ -265,7 +275,7 @@ export function unifiedCsvToXlsxBuffer(csvContent: string): Buffer {
         if (serial !== null) {
           cell.t = 'n';
           cell.v = serial;
-          cell.z = 'm/d/yy';
+          cell.z = 'M/d/yyyy';
         }
       }
     }
@@ -277,8 +287,17 @@ export function unifiedCsvToXlsxBuffer(csvContent: string): Buffer {
         if (frac !== null) {
           cell.t = 'n';
           cell.v = frac;
-          cell.z = 'h:mm';
+          cell.z = 'h:mm:ss am/pm';
         }
+      }
+    }
+    for (const ci of textColIdxs) {
+      const addr = XLSX.utils.encode_cell({ c: ci, r });
+      const cell = ws[addr];
+      if (cell) {
+        cell.t = 's';
+        cell.v = String(cell.v ?? '');
+        cell.z = '@';
       }
     }
   }
@@ -388,6 +407,15 @@ export function generateUnifiedCSV(
     }
     return JSON.stringify(meta);
   };
+
+  /**
+   * Phone numbers in the working scheduler file are bare digit strings with
+   * no leading "+" and no spaces (e.g. "918297941606"). The scheduler's
+   * dialer expects this exact shape, so strip a leading "+" / spaces / dashes
+   * / parens from both user_contact and from_number.
+   */
+  const normalizePhone = (s: string): string =>
+    String(s || '').trim().replace(/^\+/, '').replace(/[\s()-]/g, '');
 
   const getCountry = (r: Record<string, string>): string =>
     r['Country Of Residence'] ||
@@ -518,8 +546,8 @@ export function generateUnifiedCSV(
       user_last_name:            c['Last Name']                || '',
       // Source columns now match the unified-output naming, but fall back to
       // older header spellings so previously-uploaded files still resolve.
-      user_contact:              c['user_contact']             || c['Contact'] || '',
-      from_number:               c['from_number']              || c['From']    || '',
+      user_contact:              normalizePhone(c['user_contact'] || c['Contact'] || ''),
+      from_number:               normalizePhone(c['from_number']  || c['From']    || ''),
       user_country_of_residence:
         c['user_country_of_residence'] ||
         getCountry(c) ||
