@@ -44,7 +44,14 @@ function mimeForExt(ext: string): string {
 
 /**
  * Upload the raw file bytes to the Storage bucket. Returns the bucket path.
- * Path layout: <data-type>/<upload-id>-<sanitized-filename>
+ *
+ * Path layout: <data-type>/<upload-id>.<ext>
+ *
+ * We intentionally do NOT preserve the original filename in the bucket path —
+ * Supabase Storage rejects paths with various unicode / whitespace / special-
+ * char combinations as "Invalid path specified in request URL", even after
+ * regex sanitization. uuid-based paths are guaranteed valid. The original
+ * filename is still kept in the DB row's `file_name` column for display.
  */
 async function uploadRawToBucket(
   uploadId: string,
@@ -52,9 +59,13 @@ async function uploadRawToBucket(
   originalName: string,
   buffer: Buffer
 ): Promise<string> {
-  const safeName = originalName.replace(/[^a-zA-Z0-9._-]+/g, '_');
-  const path = `${dataType}/${uploadId}-${safeName}`;
-  const ext = (originalName.split('.').pop() || 'csv').toLowerCase();
+  // Extension only — strip anything that isn't a-z/0-9, cap length defensively.
+  const ext = (originalName.split('.').pop() || 'csv')
+    .toLowerCase()
+    .replace(/[^a-z0-9]/g, '')
+    .slice(0, 10) || 'bin';
+
+  const path = `${dataType}/${uploadId}.${ext}`;
 
   const { error } = await getSupabase()
     .storage
