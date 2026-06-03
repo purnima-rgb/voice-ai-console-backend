@@ -10,6 +10,8 @@ import {
   unifiedCsvToXlsxBuffer,
 } from '../services/csvService';
 import { isS3Configured, uploadUnifiedSnapshot } from '../services/s3Storage';
+import { isSchedulerConfigured, notifyScheduler } from '../services/schedulerService';
+import { recordAuditEvent } from '../services/auditService';
 import { validateStudentList, validateGradeSheet, validateCallingData } from '../services/validationService';
 import {
   saveUploadRecord,
@@ -103,6 +105,23 @@ router.post(
         rawFile: { buffer: req.file.buffer, originalName: req.file.originalname },
       });
 
+      await recordAuditEvent({
+        eventType: 'upload',
+        dataType: 'student-list',
+        uploadId,
+        university: university as string,
+        program,
+        fileName: req.file.originalname,
+        actorEmail: req.user!.email,
+        actorRole: req.user!.role,
+        status: errors.length === 0 ? 'success' : 'failed',
+        detail: {
+          totalRows: rows.length,
+          validRows: errors.length === 0 ? valid.length : 0,
+          errorRows: errors.length,
+        },
+      });
+
       res.json({
         uploadId,
         success: errors.length === 0,
@@ -165,6 +184,23 @@ router.post(
         data: errors.length === 0 ? valid : [],
         errors,
         rawFile: { buffer: req.file.buffer, originalName: req.file.originalname },
+      });
+
+      await recordAuditEvent({
+        eventType: 'upload',
+        dataType: 'grade-sheet',
+        uploadId,
+        university: university as string,
+        program,
+        fileName: req.file.originalname,
+        actorEmail: req.user!.email,
+        actorRole: req.user!.role,
+        status: errors.length === 0 ? 'success' : 'failed',
+        detail: {
+          totalRows: rows.length,
+          validRows: errors.length === 0 ? valid.length : 0,
+          errorRows: errors.length,
+        },
       });
 
       res.json({
@@ -245,11 +281,44 @@ router.post(
         unifiedCsv,
       });
 
+      await recordAuditEvent({
+        eventType: 'upload',
+        dataType: 'calling-data',
+        uploadId,
+        university: university as string,
+        program,
+        fileName: req.file.originalname,
+        actorEmail: req.user!.email,
+        actorRole: req.user!.role,
+        status: errors.length === 0 ? 'success' : 'failed',
+        detail: {
+          totalRows: rows.length,
+          validRows: errors.length === 0 ? valid.length : 0,
+          errorRows: errors.length,
+        },
+      });
+
+      if (unifiedCsv) {
+        await recordAuditEvent({
+          eventType: 'unified_generated',
+          dataType: 'calling-data',
+          uploadId,
+          university: university as string,
+          program,
+          fileName: req.file.originalname,
+          actorEmail: req.user!.email,
+          actorRole: req.user!.role,
+          status: 'success',
+          detail: { callingRows: valid.length },
+        });
+      }
+
       // Archive the generated unified files (CSV + scheduler-ready XLSX) to S3
       // as an immutable per-upload snapshot. Best-effort: a failure here is
       // logged but does NOT fail the upload — the Supabase-backed snapshot
       // remains the source of truth and downloads still work.
       let unifiedArchivedToS3 = false;
+      let schedulerNotified = false;
       if (unifiedCsv && isS3Configured()) {
         try {
           const xlsxBuffer = unifiedCsvToXlsxBuffer(unifiedCsv);
@@ -263,8 +332,67 @@ router.post(
           });
           unifiedArchivedToS3 = true;
           console.log(`[s3] archived unified snapshot: ${keys.csvKey}, ${keys.xlsxKey}`);
+
+          await recordAuditEvent({
+            eventType: 's3_archived',
+            dataType: 'calling-data',
+            uploadId,
+            university: university as string,
+            program,
+            fileName: req.file.originalname,
+            actorEmail: req.user!.email,
+            actorRole: req.user!.role,
+            status: 'success',
+            detail: { bucket: keys.bucket, csvKey: keys.csvKey, xlsxKey: keys.xlsxKey },
+          });
+
+          // Notify the downstream Voice AI scheduler that a new unified file
+          // is ready. Best-effort, env-gated — a failure is audited but does
+          // NOT fail the upload.
+          if (isSchedulerConfigured()) {
+            const result = await notifyScheduler({
+              uploadId,
+              university: university as string,
+              program: program as string,
+              uploadedAt: now,
+              bucket: keys.bucket,
+              csvKey: keys.csvKey,
+              xlsxKey: keys.xlsxKey,
+              rowCount: valid.length,
+            });
+            schedulerNotified = result.ok;
+            if (result.ok) {
+              console.log(`[scheduler] notified ok (status ${result.status ?? '?'})`);
+            } else {
+              console.error(`[scheduler] notify failed (continuing): ${result.detail ?? ''}`);
+            }
+            await recordAuditEvent({
+              eventType: 'scheduler_notified',
+              dataType: 'calling-data',
+              uploadId,
+              university: university as string,
+              program,
+              fileName: req.file.originalname,
+              actorEmail: req.user!.email,
+              actorRole: req.user!.role,
+              status: result.ok ? 'success' : 'failed',
+              detail: { httpStatus: result.status, detail: result.detail, csvKey: keys.csvKey, xlsxKey: keys.xlsxKey },
+            });
+          }
         } catch (s3err) {
           console.error('[s3] unified snapshot archive failed (continuing):', s3err);
+          await recordAuditEvent({
+            eventType: 's3_archived',
+            dataType: 'calling-data',
+            uploadId,
+            university: university as string,
+            program,
+            fileName: req.file.originalname,
+            actorEmail: req.user!.email,
+            actorRole: req.user!.role,
+            status: 'failed',
+            detail: { error: String(s3err).slice(0, 500) },
+          });
         }
       }
 
@@ -278,6 +406,7 @@ router.post(
         data: errors.length === 0 ? valid.slice(0, 50) : [],
         unifiedCsvAvailable: unifiedCsv != null,
         unifiedArchivedToS3,
+        schedulerNotified,
       });
     } catch (err) {
       console.error('Upload error:', err);

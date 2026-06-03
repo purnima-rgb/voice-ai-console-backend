@@ -10,8 +10,9 @@ import {
   getUnifiedCsv,
 } from '../services/storageService';
 import { generateUnifiedCSV, unifiedCsvToXlsxBuffer } from '../services/csvService';
+import { listAuditEvents } from '../services/auditService';
 import { AGENT_MAPPING } from '../config/agentMapping';
-import { University } from '../types';
+import { AuditEventType, University } from '../types';
 
 const router = Router();
 
@@ -230,6 +231,32 @@ router.get(
     } catch (err) {
       console.error('upload-history fetch failed:', err);
       res.status(500).json({ error: 'Failed to fetch upload history', details: String(err) });
+    }
+  }
+);
+
+// GET /api/data/audit
+// Audit log feed — every upload, unified-file generation, S3 archive, and
+// scheduler notification. Admin-facing: only system_admin + data_manager.
+// Optional filters: eventType, university, program, uploadId, limit.
+router.get(
+  '/audit',
+  authenticateToken,
+  requireRole('system_admin', 'data_manager'),
+  async (req: Request, res: Response): Promise<void> => {
+    try {
+      const { eventType, university, program, uploadId, limit } = req.query;
+      const events = await listAuditEvents({
+        eventType: eventType as AuditEventType | undefined,
+        university: university as string | undefined,
+        program: program as string | undefined,
+        uploadId: uploadId as string | undefined,
+        limit: limit ? parseInt(limit as string, 10) : undefined,
+      });
+      res.json({ events, total: events.length });
+    } catch (err) {
+      console.error('audit fetch failed:', err);
+      res.status(500).json({ error: 'Failed to fetch audit log', details: String(err) });
     }
   }
 );

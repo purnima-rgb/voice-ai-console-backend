@@ -35,6 +35,37 @@ export interface UploadRecord {
   status: 'success' | 'partial' | 'failed';
 }
 
+/**
+ * What kind of thing happened. Drives the audit log feed.
+ *  - upload:             a raw file (student-list / grade-sheet / calling-data) was uploaded
+ *  - unified_generated:  a unified Voice-AI CSV was generated for a clean calling-data upload
+ *  - s3_archived:        the unified CSV + XLSX were archived to S3
+ *  - scheduler_notified: the downstream Voice-AI scheduler was pinged about a new unified file
+ */
+export type AuditEventType =
+  | 'upload'
+  | 'unified_generated'
+  | 's3_archived'
+  | 'scheduler_notified';
+
+export interface AuditEvent {
+  id: string;
+  eventType: AuditEventType;
+  /** Present for `upload` events. */
+  dataType?: DataType;
+  /** The upload this event is tied to. */
+  uploadId: string;
+  university?: string;
+  program?: string;
+  fileName?: string;
+  actorEmail?: string;
+  actorRole?: string;
+  status: 'success' | 'failed';
+  /** Free-form extra context: S3 keys, row counts, error/skip reason, scheduler HTTP status. */
+  detail?: Record<string, unknown>;
+  createdAt: string;
+}
+
 export interface StoredData {
   uploadId: string;
   dataType: DataType;
