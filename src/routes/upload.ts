@@ -313,15 +313,26 @@ router.post(
         });
       }
 
+      // Generate the scheduler-ready unified XLSX once — it's reused for both
+      // the S3 archive and the scheduler push below.
+      let unifiedArchivedToS3 = false;
+      let schedulerNotified = false;
+      let xlsxBuffer: Buffer | undefined;
+      let unifiedFileName: string | undefined;
+      if (unifiedCsv) {
+        xlsxBuffer = unifiedCsvToXlsxBuffer(unifiedCsv);
+        const safeStamp = now.replace(/[:.]/g, '-');
+        const safeUni   = ((university as string) || 'all').replace(/[^a-z0-9]/gi, '-');
+        const safeProg  = ((program as string) || 'all').replace(/[^a-z0-9]/gi, '-');
+        unifiedFileName = `unified-voice-ai-${safeUni}-${safeProg}-${safeStamp}.xlsx`;
+      }
+
       // Archive the generated unified files (CSV + scheduler-ready XLSX) to S3
       // as an immutable per-upload snapshot. Best-effort: a failure here is
       // logged but does NOT fail the upload — the Supabase-backed snapshot
       // remains the source of truth and downloads still work.
-      let unifiedArchivedToS3 = false;
-      let schedulerNotified = false;
-      if (unifiedCsv && isS3Configured()) {
+      if (unifiedCsv && xlsxBuffer && isS3Configured()) {
         try {
-          const xlsxBuffer = unifiedCsvToXlsxBuffer(unifiedCsv);
           const keys = await uploadUnifiedSnapshot({
             uploadId,
             university: university as string,
@@ -332,7 +343,6 @@ router.post(
           });
           unifiedArchivedToS3 = true;
           console.log(`[s3] archived unified snapshot: ${keys.csvKey}, ${keys.xlsxKey}`);
-
           await recordAuditEvent({
             eventType: 's3_archived',
             dataType: 'calling-data',
@@ -345,40 +355,6 @@ router.post(
             status: 'success',
             detail: { bucket: keys.bucket, csvKey: keys.csvKey, xlsxKey: keys.xlsxKey },
           });
-
-          // Notify the downstream Voice AI scheduler that a new unified file
-          // is ready. Best-effort, env-gated — a failure is audited but does
-          // NOT fail the upload.
-          if (isSchedulerConfigured()) {
-            const result = await notifyScheduler({
-              uploadId,
-              university: university as string,
-              program: program as string,
-              uploadedAt: now,
-              bucket: keys.bucket,
-              csvKey: keys.csvKey,
-              xlsxKey: keys.xlsxKey,
-              rowCount: valid.length,
-            });
-            schedulerNotified = result.ok;
-            if (result.ok) {
-              console.log(`[scheduler] notified ok (status ${result.status ?? '?'})`);
-            } else {
-              console.error(`[scheduler] notify failed (continuing): ${result.detail ?? ''}`);
-            }
-            await recordAuditEvent({
-              eventType: 'scheduler_notified',
-              dataType: 'calling-data',
-              uploadId,
-              university: university as string,
-              program,
-              fileName: req.file.originalname,
-              actorEmail: req.user!.email,
-              actorRole: req.user!.role,
-              status: result.ok ? 'success' : 'failed',
-              detail: { httpStatus: result.status, detail: result.detail, csvKey: keys.csvKey, xlsxKey: keys.xlsxKey },
-            });
-          }
         } catch (s3err) {
           console.error('[s3] unified snapshot archive failed (continuing):', s3err);
           await recordAuditEvent({
@@ -394,6 +370,36 @@ router.post(
             detail: { error: String(s3err).slice(0, 500) },
           });
         }
+      }
+
+      // Push the unified XLSX to the downstream Voice AI scheduler's external
+      // upload API (multipart: file + orgId, x-api-key auth). Independent of
+      // S3 — it only needs the generated file. Best-effort, env-gated: a
+      // failure is audited but does NOT fail the upload.
+      if (unifiedCsv && xlsxBuffer && unifiedFileName && isSchedulerConfigured()) {
+        const result = await notifyScheduler({
+          uploadId,
+          fileName: unifiedFileName,
+          xlsx: xlsxBuffer,
+        });
+        schedulerNotified = result.ok;
+        if (result.ok) {
+          console.log(`[scheduler] uploaded unified file ok (status ${result.status ?? '?'})`);
+        } else {
+          console.error(`[scheduler] upload failed (continuing): ${result.detail ?? ''}`);
+        }
+        await recordAuditEvent({
+          eventType: 'scheduler_notified',
+          dataType: 'calling-data',
+          uploadId,
+          university: university as string,
+          program,
+          fileName: req.file.originalname,
+          actorEmail: req.user!.email,
+          actorRole: req.user!.role,
+          status: result.ok ? 'success' : 'failed',
+          detail: { httpStatus: result.status, detail: result.detail, file: unifiedFileName },
+        });
       }
 
       res.json({

@@ -1,90 +1,90 @@
 /**
- * Downstream Voice-AI scheduler notification.
+ * Downstream Voice-AI scheduler integration.
  *
- * When a new unified file is generated and archived to S3, we POST a small
- * JSON payload to the scheduler so it can pick up the new input without a
- * manual step. The endpoint + optional bearer token are read from the env:
+ * When a clean calling-data upload produces a unified file, we push the
+ * scheduler-ready XLSX straight to the scheduler's external upload API as a
+ * multipart/form-data request:
  *
- *   SCHEDULER_WEBHOOK_URL    (required to enable; e.g. https://scheduler/.../ingest)
- *   SCHEDULER_AUTH_TOKEN     (optional; sent as `Authorization: Bearer <token>`)
+ *   POST {SCHEDULER_UPLOAD_URL}
+ *     header: x-api-key: {SCHEDULER_API_KEY}
+ *     form:   file=<unified .xlsx>, orgId={SCHEDULER_ORG_ID}
  *
- * If SCHEDULER_WEBHOOK_URL is unset, isSchedulerConfigured() is false and the
- * notify step is skipped (so unconfigured environments keep working). Like the
- * S3 archive, this is BEST-EFFORT: a failure is reported back to the caller
- * (so it can be audited) but never thrown to fail the upload.
+ * Config comes from the env (the API key is a secret — never hardcode):
+ *   SCHEDULER_UPLOAD_URL   e.g. https://voiceai-dev.devkraft.ai/api/external/upload
+ *   SCHEDULER_API_KEY      the x-api-key credential
+ *   SCHEDULER_ORG_ID       the target org id
+ *
+ * If any are unset, isSchedulerConfigured() is false and the push is skipped
+ * (so unconfigured environments keep working). Like the S3 archive this is
+ * BEST-EFFORT: a failure is reported back to the caller (for the audit log)
+ * but never thrown — it must not fail the upload.
  */
-const SCHEDULER_WEBHOOK_URL = process.env.SCHEDULER_WEBHOOK_URL;
-const SCHEDULER_AUTH_TOKEN  = process.env.SCHEDULER_AUTH_TOKEN;
+const SCHEDULER_UPLOAD_URL = process.env.SCHEDULER_UPLOAD_URL;
+const SCHEDULER_API_KEY    = process.env.SCHEDULER_API_KEY;
+const SCHEDULER_ORG_ID     = process.env.SCHEDULER_ORG_ID;
 
-/** Timeout for the scheduler call so a hung endpoint can't stall the request. */
-const NOTIFY_TIMEOUT_MS = 10_000;
+const XLSX_MIME =
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
 
-/** True only when a scheduler webhook URL is configured. */
+/** Timeout so a hung scheduler endpoint can't stall the upload request. */
+const NOTIFY_TIMEOUT_MS = 30_000;
+
+/** True only when the scheduler upload URL, API key, and org id are all set. */
 export function isSchedulerConfigured(): boolean {
-  return !!SCHEDULER_WEBHOOK_URL;
+  return !!(SCHEDULER_UPLOAD_URL && SCHEDULER_API_KEY && SCHEDULER_ORG_ID);
 }
 
 export interface SchedulerNotifyParams {
+  /** The scheduler-ready unified XLSX bytes. */
+  xlsx: Buffer;
+  /** Filename to send for the `file` part. */
+  fileName: string;
+  /** For logging / audit context. */
   uploadId: string;
-  university?: string;
-  program?: string;
-  uploadedAt?: string;
-  bucket: string;
-  csvKey: string;
-  xlsxKey: string;
-  rowCount?: number;
 }
 
 export interface SchedulerNotifyResult {
   ok: boolean;
   /** HTTP status, or undefined if the request never completed. */
   status?: number;
-  /** Short error / response detail for the audit log. */
+  /** Short response / error detail for the audit log. */
   detail?: string;
 }
 
 /**
- * Notify the scheduler about a newly archived unified file. Best-effort:
+ * Push the unified XLSX to the scheduler's external upload API. Best-effort:
  * returns a result describing success/failure; never throws.
  */
 export async function notifyScheduler(
   params: SchedulerNotifyParams
 ): Promise<SchedulerNotifyResult> {
-  if (!SCHEDULER_WEBHOOK_URL) {
+  if (!isSchedulerConfigured()) {
     return { ok: false, detail: 'scheduler not configured' };
   }
-
-  const payload = {
-    event: 'unified_file_ready',
-    uploadId: params.uploadId,
-    university: params.university ?? null,
-    program: params.program ?? null,
-    uploadedAt: params.uploadedAt ?? new Date().toISOString(),
-    s3: {
-      bucket: params.bucket,
-      csvKey: params.csvKey,
-      xlsxKey: params.xlsxKey,
-    },
-    rowCount: params.rowCount ?? null,
-  };
-
-  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-  if (SCHEDULER_AUTH_TOKEN) headers.Authorization = `Bearer ${SCHEDULER_AUTH_TOKEN}`;
 
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), NOTIFY_TIMEOUT_MS);
   try {
-    const res = await fetch(SCHEDULER_WEBHOOK_URL, {
+    // Node 18+/20 globals: FormData + Blob + fetch (undici). fetch sets the
+    // multipart boundary automatically — do NOT set Content-Type by hand.
+    const form = new FormData();
+    const blob = new Blob([params.xlsx], { type: XLSX_MIME });
+    form.append('file', blob, params.fileName);
+    form.append('orgId', SCHEDULER_ORG_ID as string);
+
+    const res = await fetch(SCHEDULER_UPLOAD_URL as string, {
       method: 'POST',
-      headers,
-      body: JSON.stringify(payload),
+      headers: { 'x-api-key': SCHEDULER_API_KEY as string },
+      body: form,
       signal: controller.signal,
     });
+
     if (!res.ok) {
       const text = await res.text().catch(() => '');
       return { ok: false, status: res.status, detail: text.slice(0, 500) };
     }
-    return { ok: true, status: res.status };
+    const text = await res.text().catch(() => '');
+    return { ok: true, status: res.status, detail: text.slice(0, 500) };
   } catch (err) {
     return { ok: false, detail: String(err).slice(0, 500) };
   } finally {
