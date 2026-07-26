@@ -20,14 +20,14 @@ const USERS: User[] = [
     email: 'swaroop.mendon@upgrad.com',
     name: 'Swaroop Mendon',
     role: 'system_admin',
-    passwordHash: bcrypt.hashSync('Swaroop@2026', 10),
+    passwordHash: bcrypt.hashSync('Swaroop@2330', 10),
   },
   {
     id: '101',
     email: 'dipika1.carpenter@upgrad.com',
     name: 'Dipika Carpenter',
     role: 'support_agent',
-    passwordHash: bcrypt.hashSync('Dipika@2026', 10),
+    passwordHash: bcrypt.hashSync('Dipika@1243', 10),
   },
 
   // ─── Demo / QA accounts ────────────────────────────────────────────
