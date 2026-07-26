@@ -1,4 +1,4 @@
-import { University } from '../types';
+import { AgentUseCase, University } from '../types';
 
 export const UNIVERSITIES: Record<University, string[]> = {
   GGU: ['MBA', 'DBA', 'MS Management'],
@@ -14,77 +14,10 @@ export const UNIVERSITY_NAMES: Record<University, string> = {
   ESGCI: 'ESGCI Paris',
 };
 
-/**
- * For 'student-list' we use the opt-out model: ALL columns present in the
- * uploaded CSV are mandatory EXCEPT the ones listed here. This makes the
- * validator adapt automatically to MBA / DBA / ET / other course CSVs whose
- * exact columns differ — the small list of optional columns stays the same.
- *
- * For 'grade-sheet' and 'calling-data' we keep the static mandatory-list
- * model (see MANDATORY_COLUMNS below) because those formats are fixed.
- */
-export const OPTIONAL_COLUMNS: Record<string, string[]> = {
-  'student-list': [
-    'Last Name',
-    'Prism User ID',
-    'GGU User ID',
-    'GGU Email',
-    'Region',
-    'Concentration',
-  ],
-  // Grade sheet also uses the opt-out model — for DBA / ET courses the
-  // exact column set varies but the optional list stays the same.
-  // Note: per-course Grade / GPA cells can legitimately be empty for
-  // courses a student hasn't attempted yet, so anything ending in
-  // " - Grade" or " - GPA" is treated as optional in the validator too.
-  'grade-sheet': [
-    'Slot / Concentration',
-    'GGU Learner Status',
-    'Last Name',
-  ],
-  'calling-data': [],
-};
-
-export const MANDATORY_COLUMNS: Record<string, string[]> = {
-  // student-list intentionally empty — uses OPTIONAL_COLUMNS opt-out model
-  'student-list': [],
-  'grade-sheet': [
-    // Note: GGU gradesheets use a multi-row header — these columns come from row 4
-    // (main header row) plus row 2 (summary headers). Last Name is intentionally
-    // not mandatory because several rows in the source data have it blank.
-    'Email',
-    'User ID',
-    'First Name',
-    'Status',
-    'Course Completed',
-    'Overall CGPA',
-    'Courses Incomplete',
-  ],
-  // Calling data: ALL columns are mandatory (no optional fields).
-  // Names match the GGU calling-data sample CSV exactly.
-  // Calling-data column names now match the unified-output naming directly
-  // (user_contact, from_number, date_of_call, …). All mandatory.
-  'calling-data': [
-    'User ID',
-    'Email ID',
-    'First Name',
-    'Last Name',
-    'University',
-    'Program',
-    'Cohort #',
-    'Cohort ID',
-    'Status',
-    'user_country_of_residence',
-    'user_contact',
-    'from_number',
-    'date_of_call',
-    'time_of_call',
-    'timezone',
-    'reason',
-    'agent_id',
-  ],
-};
-
+// Column order matches the client's reference unified file exactly
+// (unified_ggu_assignment_reminder_23_july_2026_final.xlsx): timezone comes
+// BEFORE date_of_call / time_of_call. agentDataToXlsxBuffer's numeric-format
+// targeting (dateColIdx / timeColIdx) depends on this exact order.
 export const UNIFIED_CSV_COLUMNS = [
   'user_id',
   'user_first_name',
@@ -92,26 +25,101 @@ export const UNIFIED_CSV_COLUMNS = [
   'user_contact',
   'from_number',
   'user_country_of_residence',
+  'timezone',
   'date_of_call',
   'time_of_call',
-  'timezone',
   'reason',
   'agent_id',
   'user_metadata',
 ];
 
-/**
- * Override that forces every row of the unified Voice AI CSV to use this
- * single agent_id, regardless of what the calling-data upload contained.
- *
- * Set this while only one agent is registered in the downstream Voice AI
- * console — otherwise the scheduler can't resolve the per-row IDs from the
- * agent-mapping spreadsheet and skips every call. Once multiple real agents
- * are registered, unset this env var (or leave it empty) and the unified
- * CSV will use each calling row's own agent_id again.
- */
-export const VOICE_AI_DEFAULT_AGENT_ID = process.env.VOICE_AI_DEFAULT_AGENT_ID || '';
-
 export const JWT_EXPIRY = '24h';
 export const UPLOADS_DIR = 'uploads';
 export const DATA_DIR = 'data';
+
+// ── Agent-based upload definitions ────────────────────────────────────
+
+export const AGENT_USE_CASES: AgentUseCase[] = [
+  'live-session-reminder',
+  'deferral-request',
+  'missed-assignment-deadline',
+  'new-program-onboarding',
+  'deadline-reminder',
+];
+
+export const AGENT_DISPLAY_NAMES: Record<AgentUseCase, string> = {
+  'live-session-reminder':    'Live Session Reminder Calling',
+  'deferral-request':         'Deferral Request',
+  'missed-assignment-deadline': 'Missed Assignment Deadline',
+  'new-program-onboarding':   'New Program Onboarding',
+  'deadline-reminder':        'Deadline Reminder',
+};
+
+export const AGENT_MANDATORY_COLUMNS: string[] = [
+  'user_id',
+  'user_first_name',
+  'user_last_name',
+  'user_contact',
+  'from_number',
+  'user_country_of_residence',
+  'timezone',
+  'date_of_call',
+  'time_of_call',
+  'reason',
+  'agent_id',
+];
+
+export const AGENT_OPTIONAL_COLUMNS: string[] = [
+  'Email',
+  'Program Name',
+  'Cohort ID',
+];
+
+/**
+ * Voice AI console agent IDs — each use case maps to one live agent.
+ * Uploaded data's `agent_id` column must match the value here for the
+ * selected agent, or the row is rejected during validation.
+ */
+export const AGENT_IDS: Record<AgentUseCase, string> = {
+  'deadline-reminder':          '6a5f3d6e4b06e6a040d16d04', // Assignment Deadline Reminder Agent
+  'live-session-reminder':      '6a4f8a16008496639b3b25fb', // Live Session Reminder Call Agent
+  'deferral-request':           '6a16dc61ba7c5d66b6c4d21b', // Deferral Request (Work or Personal Demands) Agent
+  'missed-assignment-deadline': '6a16d626ba7c5d66b6c4d0c6', // Missed Assignment Deadline Extension Agent
+  'new-program-onboarding':     '6a16bd59ba7c5d66b6c4cee9', // New Batch Onboarding Call Agent
+};
+
+export const AGENT_SPECIFIC_COLUMNS: Record<AgentUseCase, string[]> = {
+  'live-session-reminder': [
+    'Course',
+    'Session Day',
+    'Session Date',
+    'Session Start Time',
+    'Session End Time',
+    'Session Type',
+    'Session SME/Professor',
+    'Session Topic',
+  ],
+  'deferral-request': [
+    'Name of Course Failed',
+    'Next Batch start date',
+    'Deferral Fees Percentage',
+  ],
+  'missed-assignment-deadline': [
+    'Assignment Name',
+    'Assignment Deadline',
+    'Extended Assignment Deadline',
+  ],
+  'new-program-onboarding': [
+    'Orientation Date',
+    'Welcome Webinar Date',
+    'Batch Launch Date',
+    'First Graded Course',
+    'First Graded Course Start Date',
+    'First Live Session Date',
+  ],
+  'deadline-reminder': [
+    'Course Name',
+    'Assignment Name',
+    'Assignment Deadline',
+  ],
+};

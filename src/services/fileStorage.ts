@@ -35,7 +35,7 @@ interface StoredRecord {
   status: 'success' | 'partial' | 'failed';
   rows: Record<string, string>[];
   errors: ErrorRow[];
-  /** Generated unified Voice-AI CSV (calling-data uploads only). */
+  /** Legacy field — unused; unified files are now rebuilt on demand from `rows`. */
   unifiedCsv?: string | null;
 }
 
@@ -114,8 +114,12 @@ export async function getUploadErrors(uploadId: string): Promise<ErrorRow[]> {
   return readAll().find((r) => r.uploadId === uploadId)?.errors || [];
 }
 
-export async function getUnifiedCsv(uploadId: string): Promise<string | null> {
-  return readAll().find((r) => r.uploadId === uploadId)?.unifiedCsv ?? null;
+/**
+ * Raw stored rows (the validated data) for an upload — used to regenerate
+ * the unified XLSX on demand and to power the View Data screen.
+ */
+export async function getUploadRows(uploadId: string): Promise<Record<string, string>[] | null> {
+  return readAll().find((r) => r.uploadId === uploadId)?.rows ?? null;
 }
 
 /** Reconstruct the raw uploaded file from the inline base64 stored in JSON. */
@@ -153,94 +157,27 @@ export async function listUploads(filters?: {
   return rows.map(toRecord);
 }
 
-export async function getStudentData(
-  university?: string,
-  program?: string
-): Promise<Record<string, string>[]> {
-  const uploads = readAll()
-    .filter((r) => r.dataType === 'student-list')
-    .filter((r) => !university || r.university === university)
-    .filter((r) => !program || r.program === program);
-
-  const emailsSeen = new Set<string>();
-  const out: Record<string, string>[] = [];
-  for (const upload of uploads) {
-    for (const row of upload.rows) {
-      const email = (row['Email'] || row['Email ID'] || '').toLowerCase().trim();
-      if (email && !emailsSeen.has(email)) {
-        emailsSeen.add(email);
-        out.push({
-          ...row,
-          University: upload.university || '',
-          Program: upload.program || '',
-        });
-      }
-    }
-  }
-  return out;
-}
-
-export async function getGradeSheetData(
-  university?: string,
-  program?: string
-): Promise<Record<string, string>[]> {
-  // readAll() returns uploads newest-first (see saveUploadRecord: unshift).
-  // For a given (university, program), the newest upload is authoritative
-  // per student. Dedup by Email (or Email ID fallback) — same semantics as
-  // getStudentData.
-  const uploads = readAll()
-    .filter((r) => r.dataType === 'grade-sheet')
-    .filter((r) => !university || r.university === university)
-    .filter((r) => !program || r.program === program);
-
-  const seen = new Set<string>();
-  const out: Record<string, string>[] = [];
-  for (const upload of uploads) {
-    for (const row of upload.rows) {
-      const email = (row['Email'] || row['Email ID'] || '').toLowerCase().trim();
-      if (!email) continue;
-      if (seen.has(email)) continue;
-      seen.add(email);
-      out.push({
-        ...row,
-        University: upload.university || '',
-        Program: upload.program || '',
-      });
-    }
-  }
-  return out;
-}
-
-export async function getCallingData(): Promise<Record<string, string>[]> {
-  const uploads = readAll().filter((r) => r.dataType === 'calling-data');
-  const out: Record<string, string>[] = [];
-  for (const upload of uploads) out.push(...upload.rows);
-  return out;
-}
-
 export async function getStats(): Promise<{
   totalUploadsToday: number;
-  totalStudents: number;
-  totalCallingRecords: number;
+  totalUploads: number;
+  totalRowsProcessed: number;
   lastSyncTime: string | null;
 }> {
   const rows = readAll();
   const todayPrefix = new Date().toISOString().split('T')[0];
 
   let totalUploadsToday = 0;
-  let totalStudents = 0;
-  let totalCallingRecords = 0;
+  let totalRowsProcessed = 0;
 
   for (const r of rows) {
     if (r.uploadedAt.startsWith(todayPrefix)) totalUploadsToday += 1;
-    if (r.dataType === 'student-list')        totalStudents += r.validRows;
-    if (r.dataType === 'calling-data')        totalCallingRecords += r.validRows;
+    totalRowsProcessed += r.validRows;
   }
 
   return {
     totalUploadsToday,
-    totalStudents,
-    totalCallingRecords,
+    totalUploads: rows.length,
+    totalRowsProcessed,
     lastSyncTime: rows[0]?.uploadedAt || null,
   };
 }

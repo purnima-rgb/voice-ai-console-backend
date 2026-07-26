@@ -1,155 +1,99 @@
-import { ValidationResult, ErrorRow } from '../types';
-import { OPTIONAL_COLUMNS } from '../config/constants';
+import { ValidationResult, ErrorRow, AgentUseCase } from '../types';
+import { AGENT_IDS, AGENT_DISPLAY_NAMES } from '../config/constants';
+import {
+  validateUserContact,
+  validateFromNumber,
+  normalizeFromNumber,
+  parseDateToSerial,
+  parseTimeToFraction,
+} from './csvService';
 
 /**
- * "mandatory-list" model: every column in `mandatoryColumns` must exist and
- * have a non-empty value on every row. Used by grade-sheet and calling-data.
+ * Agent-based upload validation: mandatory columns must all be present
+ * (mandatory-list model), AND every row's `agent_id` must match the fixed
+ * agent ID registered for the selected use case (see AGENT_IDS). This
+ * catches the client uploading data meant for one agent under the wrong
+ * agent/use-case selection.
  */
-export function validateRows(
+export function validateAgentData(
   rows: Record<string, string>[],
-  mandatoryColumns: string[]
+  mandatoryColumns: string[],
+  agentType: AgentUseCase
 ): ValidationResult {
+  const expectedAgentId = AGENT_IDS[agentType];
   const valid: Record<string, string>[] = [];
   const errors: ErrorRow[] = [];
 
   rows.forEach((row, index) => {
-    const missingColumns: string[] = [];
+    const messages: string[] = [];
 
+    // 1. Columns A-K (the 11 unified mandatory columns) must all be present.
+    const missingColumns: string[] = [];
     for (const col of mandatoryColumns) {
       const value = row[col];
       if (value === undefined || value === null || String(value).trim() === '') {
         missingColumns.push(col);
       }
     }
-
-    if (missingColumns.length === 0) {
-      valid.push(row);
-    } else {
-      errors.push({
-        rowNumber: index + 2, // +2 because row 1 is header, arrays are 0-indexed
-        data: row,
-        errorMessage: `Missing required fields: ${missingColumns.join(', ')}`,
-      });
+    if (missingColumns.length > 0) {
+      messages.push(`Missing required fields: ${missingColumns.join(', ')}`);
     }
-  });
 
-  return { valid, errors };
-}
-
-/**
- * "all-except-optional" model: every column present in the uploaded CSV is
- * required to have a value, EXCEPT the columns named in `optionalColumns`.
- *
- * This is used for student-list across MBA / DBA / ET, where the exact
- * column set varies by course but the small list of optional columns
- * (Prism User ID, GGU User ID, GGU Email, Region, Concentration) is fixed.
- *
- * Padding rows (every key identifier empty: Email + First Name + Last Name)
- * are skipped silently — they're typically artifacts of Excel/Sheets export.
- */
-export function validateAllExceptOptional(
-  rows: Record<string, string>[],
-  optionalColumns: string[]
-): ValidationResult {
-  const valid: Record<string, string>[] = [];
-  const errors: ErrorRow[] = [];
-
-  // Case-insensitive lookup so "Region" and "region" both match
-  const optionalSet = new Set(optionalColumns.map((c) => c.toLowerCase().trim()));
-  const isOptional = (col: string): boolean => optionalSet.has(col.toLowerCase().trim());
-
-  rows.forEach((row, index) => {
-    // Skip padding rows (no Email / First Name / Last Name at all)
-    const email     = String(row['Email']      || row['Email ID'] || '').trim();
-    const firstName = String(row['First Name'] || '').trim();
-    const lastName  = String(row['Last Name']  || '').trim();
-    if (!email && !firstName && !lastName) return;
-
-    const missing: string[] = [];
-    for (const col of Object.keys(row)) {
-      if (isOptional(col)) continue;
-      const v = row[col];
-      if (v === undefined || v === null || String(v).trim() === '') {
-        missing.push(col);
+    // 2. agent_id must match the fixed ID registered for the selected agent.
+    if (missingColumns.indexOf('agent_id') === -1) {
+      const actualAgentId = String(row['agent_id'] || '').trim();
+      if (actualAgentId !== expectedAgentId) {
+        messages.push(
+          `agent_id "${actualAgentId || '(empty)'}" does not match the required agent_id ` +
+          `"${expectedAgentId}" for ${AGENT_DISPLAY_NAMES[agentType]}`
+        );
       }
     }
 
-    if (missing.length === 0) {
-      valid.push(row);
-    } else {
-      errors.push({
-        rowNumber: index + 2,
-        data: row,
-        errorMessage: `Missing required fields: ${missing.join(', ')}`,
-      });
+    // 3. user_contact must be a clean digit string — reject scientific-notation
+    //    corruption from unformatted Excel number cells.
+    if (missingColumns.indexOf('user_contact') === -1) {
+      const contactError = validateUserContact(row['user_contact']);
+      if (contactError) messages.push(contactError);
     }
+
+    // 4. from_number must match the required format. A missing leading zero
+    //    (Excel numeric-cell stripping, e.g. "1169323435") is auto-restored
+    //    in place so the corrected value carries through to the unified file
+    //    — everything else (scientific notation, wrong length) still rejects.
+    if (missingColumns.indexOf('from_number') === -1) {
+      const fromNumberError = validateFromNumber(row['from_number']);
+      if (fromNumberError) {
+        messages.push(fromNumberError);
+      } else {
+        row['from_number'] = normalizeFromNumber(row['from_number']);
+      }
+    }
+
+    // 5. date_of_call / time_of_call must parse into the exact format used by
+    //    the unified output file (Excel serial date / time-of-day fraction).
+    if (missingColumns.indexOf('date_of_call') === -1) {
+      if (parseDateToSerial(row['date_of_call']) === null) {
+        messages.push(`date_of_call "${row['date_of_call']}" is not a recognized date (expected YYYY-MM-DD)`);
+      }
+    }
+    if (missingColumns.indexOf('time_of_call') === -1) {
+      if (parseTimeToFraction(row['time_of_call']) === null) {
+        messages.push(`time_of_call "${row['time_of_call']}" is not a recognized time (expected HH:MM or HH:MM:SS)`);
+      }
+    }
+
+    if (messages.length === 0) {
+      valid.push(row);
+      return;
+    }
+
+    errors.push({
+      rowNumber: index + 2,
+      data: row,
+      errorMessage: messages.join('; '),
+    });
   });
 
   return { valid, errors };
-}
-
-/**
- * Student list uses the opt-out validator — column set varies by course,
- * but the small optional list (Prism User ID, GGU User ID, GGU Email,
- * Region, Concentration) stays constant.
- */
-export function validateStudentList(rows: Record<string, string>[]): ValidationResult {
-  return validateAllExceptOptional(rows, OPTIONAL_COLUMNS['student-list'] || []);
-}
-
-/**
- * Grade sheet uses the opt-out model too. Optional set:
- *   - The 3 explicitly client-flagged columns
- *     (Slot / Concentration, GGU Learner Status, Last Name)
- *   - All per-course "<Course Name> - Grade" / "<Course Name> - GPA" columns —
- *     these can legitimately be empty for courses a student hasn't attempted
- *     yet (e.g. Concentration 1/2/3 in the sample data).
- *
- * Padding-row detection (Email + First Name + Last Name all blank) is shared
- * with student list — same heuristic, same behavior.
- */
-export function validateGradeSheet(rows: Record<string, string>[]): ValidationResult {
-  const baseOptional = OPTIONAL_COLUMNS['grade-sheet'] || [];
-
-  // Derive the per-course Grade/GPA columns dynamically from the first row's
-  // keys — saves us hardcoding course names which differ across MBA / DBA / ET.
-  const courseGradeCols: string[] = [];
-  if (rows.length > 0) {
-    for (const col of Object.keys(rows[0])) {
-      if (/ - (Grade|GPA)$/i.test(col)) courseGradeCols.push(col);
-    }
-  }
-
-  return validateAllExceptOptional(rows, [...baseOptional, ...courseGradeCols]);
-}
-
-export function validateCallingData(rows: Record<string, string>[], mandatoryColumns: string[]): ValidationResult {
-  const result = validateRows(rows, mandatoryColumns);
-
-  // Additional validation: check that Scheduled Date is a recognizable date format
-  const furtherValid: Record<string, string>[] = [];
-  const furtherErrors: ErrorRow[] = [];
-
-  result.valid.forEach((row, index) => {
-    // New schema uses lowercase 'date_of_call'; tolerate the older spellings.
-    const dateStr =
-      row['date_of_call'] ||
-      row['Date ( DD/MM/YYYY)'] ||
-      row['Scheduled Date'] ||
-      '';
-    if (dateStr.trim() !== '') {
-      furtherValid.push(row);
-    } else {
-      furtherErrors.push({
-        rowNumber: index + 2,
-        data: row,
-        errorMessage: 'date_of_call is empty or invalid',
-      });
-    }
-  });
-
-  return {
-    valid: furtherValid,
-    errors: [...result.errors, ...furtherErrors],
-  };
 }

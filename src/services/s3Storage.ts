@@ -1,7 +1,7 @@
 /**
  * AWS S3 archival for the generated Voice AI unified files.
  *
- * Each clean calling-data upload produces an immutable unified snapshot
+ * Each clean agent-data upload produces an immutable unified snapshot
  * (CSV + scheduler-ready XLSX). In addition to the Supabase-backed snapshot,
  * we archive both formats to an S3 bucket so the client has a durable,
  * per-upload copy in their own AWS account.

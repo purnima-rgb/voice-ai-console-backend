@@ -4,25 +4,24 @@ import { v4 as uuidv4 } from 'uuid';
 import { authenticateToken, requireRole } from '../middleware/auth';
 import {
   parseRowsFromBuffer,
-  parseGradesheetFromBuffer,
   generateErrorReport,
-  generateUnifiedCSV,
-  unifiedCsvToXlsxBuffer,
+  agentDataToXlsxBuffer,
 } from '../services/csvService';
 import { isS3Configured, uploadUnifiedSnapshot } from '../services/s3Storage';
 import { isSchedulerConfigured, notifyScheduler } from '../services/schedulerService';
 import { recordAuditEvent } from '../services/auditService';
-import { validateStudentList, validateGradeSheet, validateCallingData } from '../services/validationService';
+import { validateAgentData } from '../services/validationService';
 import {
   saveUploadRecord,
   getUploadRecord,
   getUploadErrors,
-  getStudentData,
-  getGradeSheetData,
   getRawFile,
 } from '../services/storageService';
-import { MANDATORY_COLUMNS } from '../config/constants';
-import { University } from '../types';
+import {
+  AGENT_USE_CASES,
+  AGENT_MANDATORY_COLUMNS,
+} from '../config/constants';
+import { AgentUseCase, University } from '../types';
 
 const router = Router();
 
@@ -58,9 +57,13 @@ const upload = multer({
   limits: { fileSize: 50 * 1024 * 1024 }, // 50 MB
 });
 
-// POST /api/upload/student-list
+// POST /api/upload/agent-data
+// Upload pre-formatted input data for a specific Voice AI agent/use case.
+// Validates the expected columns, generates a unified XLSX (mandatory cols
+// as-is, rest → user_metadata JSON), and optionally archives to S3 / pushes
+// to the scheduler.
 router.post(
-  '/student-list',
+  '/agent-data',
   authenticateToken,
   requireRole('system_admin', 'data_manager'),
   upload.single('file'),
@@ -70,199 +73,45 @@ router.post(
       return;
     }
 
-    const { university, program } = req.body;
+    const { university, program, agentType } = req.body;
     if (!university || !program) {
       res.status(400).json({ error: 'University and program are required' });
       return;
     }
+    if (!agentType || !AGENT_USE_CASES.includes(agentType as AgentUseCase)) {
+      res.status(400).json({
+        error: `Invalid agentType. Must be one of: ${AGENT_USE_CASES.join(', ')}`,
+      });
+      return;
+    }
+
+    const agent = agentType as AgentUseCase;
 
     try {
       const rows = parseRowsFromBuffer(req.file.buffer, req.file.originalname);
-      const { valid, errors } = validateStudentList(rows);
+      const { valid, errors } = validateAgentData(rows, AGENT_MANDATORY_COLUMNS, agent);
 
       const uploadId = uuidv4();
       const now = new Date().toISOString();
 
-      await saveUploadRecord({
-        uploadId,
-        metadata: {
-          fileName: req.file.originalname,
-          dataType: 'student-list',
-          university: university as University,
-          program,
-          uploadedAt: now,
-          uploadedBy: req.user!.email,
-          totalRows: rows.length,
-          validRows: errors.length === 0 ? valid.length : 0,
-          errorRows: errors.length,
-          status: errors.length === 0 ? 'success' : 'failed',
-        },
-        // Reject the whole upload if there are ANY validation errors.
-        // No partial saves: data committed only when every row is clean.
-        // Errors are still persisted so the user can download the error report.
-        data: errors.length === 0 ? valid : [],
-        errors,
-        rawFile: { buffer: req.file.buffer, originalName: req.file.originalname },
-      });
+      let xlsxBuffer: Buffer | undefined;
+      let unifiedFileName: string | undefined;
+      let unifiedArchivedToS3 = false;
+      let schedulerNotified = false;
 
-      await recordAuditEvent({
-        eventType: 'upload',
-        dataType: 'student-list',
-        uploadId,
-        university: university as string,
-        program,
-        fileName: req.file.originalname,
-        actorEmail: req.user!.email,
-        actorRole: req.user!.role,
-        status: errors.length === 0 ? 'success' : 'failed',
-        detail: {
-          totalRows: rows.length,
-          validRows: errors.length === 0 ? valid.length : 0,
-          errorRows: errors.length,
-        },
-      });
-
-      res.json({
-        uploadId,
-        success: errors.length === 0,
-        totalRows: rows.length,
-        validRows: errors.length === 0 ? valid.length : 0,
-        errorRows: errors.length,
-        errors: errors.slice(0, 100), // first 100 errors
-        data: errors.length === 0 ? valid.slice(0, 50) : [], // no preview on reject
-      });
-    } catch (err) {
-      console.error('Upload error:', err);
-      res.status(500).json({ error: 'Failed to process file', details: String(err) });
-    }
-  }
-);
-
-// POST /api/upload/grade-sheet
-router.post(
-  '/grade-sheet',
-  authenticateToken,
-  requireRole('system_admin', 'data_manager'),
-  upload.single('file'),
-  async (req: Request, res: Response): Promise<void> => {
-    if (!req.file) {
-      res.status(400).json({ error: 'No file uploaded' });
-      return;
-    }
-
-    const { university, program } = req.body;
-    if (!university || !program) {
-      res.status(400).json({ error: 'University and program are required' });
-      return;
-    }
-
-    try {
-      // Grade sheets use a multi-row header format — use the dedicated parser
-      const rows = parseGradesheetFromBuffer(req.file.buffer, req.file.originalname);
-      const { valid, errors } = validateGradeSheet(rows);
-
-      const uploadId = uuidv4();
-      const now = new Date().toISOString();
-
-      await saveUploadRecord({
-        uploadId,
-        metadata: {
-          fileName: req.file.originalname,
-          dataType: 'grade-sheet',
-          university: university as University,
-          program,
-          uploadedAt: now,
-          uploadedBy: req.user!.email,
-          totalRows: rows.length,
-          validRows: errors.length === 0 ? valid.length : 0,
-          errorRows: errors.length,
-          status: errors.length === 0 ? 'success' : 'failed',
-        },
-        // Reject the whole upload if there are ANY validation errors.
-        // No partial saves: data committed only when every row is clean.
-        // Errors are still persisted so the user can download the error report.
-        data: errors.length === 0 ? valid : [],
-        errors,
-        rawFile: { buffer: req.file.buffer, originalName: req.file.originalname },
-      });
-
-      await recordAuditEvent({
-        eventType: 'upload',
-        dataType: 'grade-sheet',
-        uploadId,
-        university: university as string,
-        program,
-        fileName: req.file.originalname,
-        actorEmail: req.user!.email,
-        actorRole: req.user!.role,
-        status: errors.length === 0 ? 'success' : 'failed',
-        detail: {
-          totalRows: rows.length,
-          validRows: errors.length === 0 ? valid.length : 0,
-          errorRows: errors.length,
-        },
-      });
-
-      res.json({
-        uploadId,
-        success: errors.length === 0,
-        totalRows: rows.length,
-        validRows: errors.length === 0 ? valid.length : 0,
-        errorRows: errors.length,
-        errors: errors.slice(0, 100),
-        data: errors.length === 0 ? valid.slice(0, 50) : [],
-      });
-    } catch (err) {
-      console.error('Upload error:', err);
-      res.status(500).json({ error: 'Failed to process file', details: String(err) });
-    }
-  }
-);
-
-// POST /api/upload/calling-data
-router.post(
-  '/calling-data',
-  authenticateToken,
-  requireRole('system_admin', 'data_manager', 'support_agent'),
-  upload.single('file'),
-  async (req: Request, res: Response): Promise<void> => {
-    if (!req.file) {
-      res.status(400).json({ error: 'No file uploaded' });
-      return;
-    }
-
-    const { university, program } = req.body;
-    if (!university || !program) {
-      res.status(400).json({ error: 'University and program are required' });
-      return;
-    }
-
-    try {
-      const rows = parseRowsFromBuffer(req.file.buffer, req.file.originalname);
-      const { valid, errors } = validateCallingData(rows, MANDATORY_COLUMNS['calling-data']);
-
-      const uploadId = uuidv4();
-      const now = new Date().toISOString();
-
-      // On a clean upload, generate the Voice AI unified CSV snapshot
-      // using THIS upload's calling rows + the current student-list and
-      // grade-sheet for the same (university, program). The snapshot is
-      // stored against the upload and never overwritten by later uploads —
-      // each calling-data upload produces its own immutable unified CSV.
-      let unifiedCsv: string | undefined;
-      if (errors.length === 0) {
-        const [studentRows, gradeRows] = await Promise.all([
-          getStudentData(university as string, program as string),
-          getGradeSheetData(university as string, program as string),
-        ]);
-        unifiedCsv = generateUnifiedCSV(studentRows, valid, gradeRows);
+      if (errors.length === 0 && valid.length > 0) {
+        xlsxBuffer = agentDataToXlsxBuffer(valid, agent);
+        const safeStamp = now.replace(/[:.]/g, '-');
+        const safeUni = ((university as string) || 'all').replace(/[^a-z0-9]/gi, '-');
+        const safeProg = ((program as string) || 'all').replace(/[^a-z0-9]/gi, '-');
+        unifiedFileName = `unified-${agent}-${safeUni}-${safeProg}-${safeStamp}.xlsx`;
       }
 
       await saveUploadRecord({
         uploadId,
         metadata: {
           fileName: req.file.originalname,
-          dataType: 'calling-data',
+          dataType: agent,
           university: university as University,
           program,
           uploadedAt: now,
@@ -272,18 +121,15 @@ router.post(
           errorRows: errors.length,
           status: errors.length === 0 ? 'success' : 'failed',
         },
-        // Reject the whole upload if there are ANY validation errors.
-        // No partial saves: data committed only when every row is clean.
-        // Errors are still persisted so the user can download the error report.
         data: errors.length === 0 ? valid : [],
         errors,
         rawFile: { buffer: req.file.buffer, originalName: req.file.originalname },
-        unifiedCsv,
+        unifiedCsv: xlsxBuffer ? '[binary unified xlsx generated]' : undefined,
       });
 
       await recordAuditEvent({
         eventType: 'upload',
-        dataType: 'calling-data',
+        dataType: agent,
         uploadId,
         university: university as string,
         program,
@@ -295,13 +141,14 @@ router.post(
           totalRows: rows.length,
           validRows: errors.length === 0 ? valid.length : 0,
           errorRows: errors.length,
+          agentType: agent,
         },
       });
 
-      if (unifiedCsv) {
+      if (xlsxBuffer) {
         await recordAuditEvent({
           eventType: 'unified_generated',
-          dataType: 'calling-data',
+          dataType: agent,
           uploadId,
           university: university as string,
           program,
@@ -309,43 +156,26 @@ router.post(
           actorEmail: req.user!.email,
           actorRole: req.user!.role,
           status: 'success',
-          detail: { callingRows: valid.length },
+          detail: { rows: valid.length, agentType: agent },
         });
       }
 
-      // Generate the scheduler-ready unified XLSX once — it's reused for both
-      // the S3 archive and the scheduler push below.
-      let unifiedArchivedToS3 = false;
-      let schedulerNotified = false;
-      let xlsxBuffer: Buffer | undefined;
-      let unifiedFileName: string | undefined;
-      if (unifiedCsv) {
-        xlsxBuffer = unifiedCsvToXlsxBuffer(unifiedCsv);
-        const safeStamp = now.replace(/[:.]/g, '-');
-        const safeUni   = ((university as string) || 'all').replace(/[^a-z0-9]/gi, '-');
-        const safeProg  = ((program as string) || 'all').replace(/[^a-z0-9]/gi, '-');
-        unifiedFileName = `unified-voice-ai-${safeUni}-${safeProg}-${safeStamp}.xlsx`;
-      }
-
-      // Archive the generated unified files (CSV + scheduler-ready XLSX) to S3
-      // as an immutable per-upload snapshot. Best-effort: a failure here is
-      // logged but does NOT fail the upload — the Supabase-backed snapshot
-      // remains the source of truth and downloads still work.
-      if (unifiedCsv && xlsxBuffer && isS3Configured()) {
+      if (xlsxBuffer && isS3Configured()) {
         try {
+          const csvPlaceholder = '';
           const keys = await uploadUnifiedSnapshot({
             uploadId,
             university: university as string,
             program: program as string,
             uploadedAt: now,
-            csv: unifiedCsv,
+            csv: csvPlaceholder,
             xlsx: xlsxBuffer,
           });
           unifiedArchivedToS3 = true;
-          console.log(`[s3] archived unified snapshot: ${keys.csvKey}, ${keys.xlsxKey}`);
+          console.log(`[s3] archived unified snapshot: ${keys.xlsxKey}`);
           await recordAuditEvent({
             eventType: 's3_archived',
-            dataType: 'calling-data',
+            dataType: agent,
             uploadId,
             university: university as string,
             program,
@@ -353,13 +183,13 @@ router.post(
             actorEmail: req.user!.email,
             actorRole: req.user!.role,
             status: 'success',
-            detail: { bucket: keys.bucket, csvKey: keys.csvKey, xlsxKey: keys.xlsxKey },
+            detail: { bucket: keys.bucket, xlsxKey: keys.xlsxKey },
           });
         } catch (s3err) {
           console.error('[s3] unified snapshot archive failed (continuing):', s3err);
           await recordAuditEvent({
             eventType: 's3_archived',
-            dataType: 'calling-data',
+            dataType: agent,
             uploadId,
             university: university as string,
             program,
@@ -372,11 +202,7 @@ router.post(
         }
       }
 
-      // Push the unified XLSX to the downstream Voice AI scheduler's external
-      // upload API (multipart: file + orgId, x-api-key auth). Independent of
-      // S3 — it only needs the generated file. Best-effort, env-gated: a
-      // failure is audited but does NOT fail the upload.
-      if (unifiedCsv && xlsxBuffer && unifiedFileName && isSchedulerConfigured()) {
+      if (xlsxBuffer && unifiedFileName && isSchedulerConfigured()) {
         const result = await notifyScheduler({
           uploadId,
           fileName: unifiedFileName,
@@ -390,7 +216,7 @@ router.post(
         }
         await recordAuditEvent({
           eventType: 'scheduler_notified',
-          dataType: 'calling-data',
+          dataType: agent,
           uploadId,
           university: university as string,
           program,
@@ -410,7 +236,7 @@ router.post(
         errorRows: errors.length,
         errors: errors.slice(0, 100),
         data: errors.length === 0 ? valid.slice(0, 50) : [],
-        unifiedCsvAvailable: unifiedCsv != null,
+        unifiedCsvAvailable: xlsxBuffer != null,
         unifiedArchivedToS3,
         schedulerNotified,
       });

@@ -1,7 +1,7 @@
 /**
  * Downstream Voice-AI scheduler integration.
  *
- * When a clean calling-data upload produces a unified file, we push the
+ * When a clean agent-data upload produces a unified file, we push the
  * scheduler-ready XLSX straight to the scheduler's external upload API as a
  * multipart/form-data request:
  *

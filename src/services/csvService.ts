@@ -1,8 +1,12 @@
 import { parse } from 'csv-parse/sync';
 import * as XLSX from 'xlsx';
 import { ErrorRow } from '../types';
-import { UNIFIED_CSV_COLUMNS, VOICE_AI_DEFAULT_AGENT_ID } from '../config/constants';
-import * as fs from 'fs';
+import {
+  UNIFIED_CSV_COLUMNS,
+  AGENT_OPTIONAL_COLUMNS,
+  AGENT_SPECIFIC_COLUMNS,
+} from '../config/constants';
+import { AgentUseCase } from '../types';
 
 /**
  * Detect whether a filename points to an Excel workbook.
@@ -85,124 +89,6 @@ export function parseRowsFromBuffer(
   return parseCSVString(buffer.toString('utf-8'));
 }
 
-/** Disk-backed parser (kept for local dev / scripts). */
-export function parseCSV(filePath: string): Record<string, string>[] {
-  return parseCSVString(fs.readFileSync(filePath, 'utf-8'));
-}
-
-/**
- * Grade sheets from GGU use a multi-row header structure:
- *   Row 1: Title "MBA Master Grade Sheet" + per-course Credit values
- *   Row 2: Summary headers (Course Completed, Overall CGPA, Courses Incomplete)
- *   Row 3: Course names (one per pair of Grade/GPA columns)
- *   Row 4: Main field headers (GGU Student Email ID, Email, User ID, ...,
- *          Grade, GPA, Grade, GPA, ...)
- *   Row 5+: Data
- *
- * This parser reconstructs meaningful column names by combining row 2
- * (for the 3 blank header slots after "Status") and row 3 (course names)
- * with row 4. Grade/GPA cells become "<Course Name> - Grade" /
- * "<Course Name> - GPA" so each column is uniquely identifiable.
- */
-/**
- * Reconstruct gradesheet records from the raw rows.
- * GGU gradesheets use a 4-row header before the data:
- *   Row 0: Title + per-course Credit values
- *   Row 1: Summary headers (Course Completed, Overall CGPA, Courses Incomplete)
- *   Row 2: Course names (paired with Grade/GPA columns)
- *   Row 3: Main field headers (Email, User ID, ..., Grade, GPA, Grade, GPA, ...)
- *   Row 4+: Data
- *
- * Grade/GPA cells get prefixed with their course name so each column is unique
- * (e.g. "Fundamentals of Business - Grade").
- */
-function gradesheetRawRowsToRecords(
-  rawRows: string[][]
-): Record<string, string>[] {
-  if (rawRows.length < 5) {
-    // Doesn't look like a gradesheet — fall back to flat parsing
-    return rawRowsToRecords(rawRows);
-  }
-
-  const summaryRow = rawRows[1] || [];
-  const courseRow  = rawRows[2] || [];
-  const headerRow  = rawRows[3] || [];
-
-  const finalHeaders: string[] = [];
-  for (let i = 0; i < headerRow.length; i++) {
-    let h = String(headerRow[i] || '').trim();
-
-    if (!h) {
-      const sh = String(summaryRow[i] || '').trim();
-      if (sh) h = sh;
-    }
-
-    if (h === 'Grade' || h === 'GPA') {
-      let courseName = '';
-      for (let j = i; j >= 0; j--) {
-        const c = String(courseRow[j] || '').trim();
-        if (c) { courseName = c; break; }
-      }
-      if (courseName) h = `${courseName} - ${h}`;
-    }
-
-    if (!h) h = `Column ${i + 1}`;
-    finalHeaders.push(h);
-  }
-
-  const records: Record<string, string>[] = [];
-  for (let r = 4; r < rawRows.length; r++) {
-    const row = rawRows[r] || [];
-    if (row.every((c) => !c || String(c).trim() === '')) continue;
-
-    const record: Record<string, string> = {};
-    for (let c = 0; c < finalHeaders.length; c++) {
-      record[finalHeaders[c]] = String(row[c] ?? '').trim();
-    }
-    records.push(record);
-  }
-
-  return records;
-}
-
-/** In-memory variant of parseGradesheetCSV — preferred on serverless. */
-export function parseGradesheetCSVString(content: string): Record<string, string>[] {
-  const cleanContent = content.replace(/^﻿/, '');
-
-  const rawRows = parse(cleanContent, {
-    columns: false,
-    skip_empty_lines: false,
-    trim: true,
-    relax_column_count: true,
-    relax_quotes: true,
-  }) as string[][];
-
-  if (rawRows.length < 5) {
-    return parseCSVString(content);
-  }
-
-  return gradesheetRawRowsToRecords(rawRows);
-}
-
-/**
- * Auto-detect gradesheet file type from filename and parse the buffer.
- * Use this from upload routes — handles both CSV and Excel grade sheets.
- */
-export function parseGradesheetFromBuffer(
-  buffer: Buffer,
-  filename: string
-): Record<string, string>[] {
-  if (isExcelFile(filename)) {
-    return gradesheetRawRowsToRecords(excelToRawRows(buffer));
-  }
-  return parseGradesheetCSVString(buffer.toString('utf-8'));
-}
-
-/** Disk-backed wrapper for parseGradesheetCSVString. */
-export function parseGradesheetCSV(filePath: string): Record<string, string>[] {
-  return parseGradesheetCSVString(fs.readFileSync(filePath, 'utf-8'));
-}
-
 /**
  * Convert "M/D/YY" or "M/D/YYYY" → Excel date serial (days since 1900-01-01,
  * with the 1900-Feb-29 leap-year bug baked in via the standard +25569 offset).
@@ -229,66 +115,253 @@ function timeStringToFraction(s: string): number | null {
   return (h * 3600 + mm * 60 + ss) / 86_400;
 }
 
-/**
- * Take a previously-generated unified CSV string and produce an .xlsx that
- * byte-for-byte matches the cell typing of the known-good scheduler file
- * (Copy of calling_data (1).xlsx):
- *   • date_of_call → t='n', number-format 'M/d/yyyy'  (serial days)
- *   • time_of_call → t='n', number-format 'h:mm:ss am/pm'  (fraction of day)
- *   • user_id / user_contact / from_number → t='s', number-format '@' (text)
- *     so long digit strings never collapse to scientific notation.
- *   • everything else → plain text (General).
- * Storing date/time as numbers lets the scheduler's Excel parser compute the
- * wall-clock call time, which is what makes calls schedule instead of skip.
- */
-export function unifiedCsvToXlsxBuffer(csvContent: string): Buffer {
-  const records = parse(csvContent, {
-    columns: true,
-    skip_empty_lines: true,
-    trim: false,
-    relax_quotes: true,
-    relax_column_count: true,
-  }) as Record<string, string>[];
 
-  // aoa: header row + data rows in canonical UNIFIED_CSV_COLUMNS order
+/**
+ * Convert an Excel serial number (days since 1900-01-00) to an ISO date
+ * string (YYYY-MM-DD). Used when flattening metadata fields that Excel
+ * stores as numbers but should appear as readable dates in user_metadata.
+ */
+function excelSerialToISODate(serial: number): string {
+  const utcDays = serial - 25569;
+  const ms = utcDays * 86_400_000;
+  const d = new Date(ms);
+  const yyyy = d.getUTCFullYear();
+  const mm = String(d.getUTCMonth() + 1).padStart(2, '0');
+  const dd = String(d.getUTCDate()).padStart(2, '0');
+  return `${yyyy}-${mm}-${dd}`;
+}
+
+/**
+ * Convert an Excel time fraction (0..1) to HH:MM for metadata display.
+ */
+function excelFractionToTime(frac: number): string {
+  const totalMinutes = Math.round(frac * 24 * 60);
+  const h = Math.floor(totalMinutes / 60);
+  const m = totalMinutes % 60;
+  return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
+}
+
+/**
+ * Convert an ISO date string (YYYY-MM-DD) to an Excel serial number.
+ */
+function isoDateToExcelSerial(s: string): number | null {
+  const m = s.trim().match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);
+  if (!m) return null;
+  const year = parseInt(m[1], 10);
+  const month = parseInt(m[2], 10);
+  const day = parseInt(m[3], 10);
+  if (month < 1 || month > 12 || day < 1 || day > 31) return null;
+  return Math.floor(Date.UTC(year, month - 1, day) / 86_400_000) + 25569;
+}
+
+/**
+ * Parse `date_of_call` from any of the formats we see in agent input files
+ * (ISO "YYYY-MM-DD", slash "M/D/YYYY", or an already-numeric Excel serial)
+ * into an Excel serial number. Returns null when the value can't be
+ * recognized as a date — callers should treat that as a validation error.
+ */
+export function parseDateToSerial(raw: string): number | null {
+  const s = String(raw ?? '').trim();
+  if (!s) return null;
+  const iso = isoDateToExcelSerial(s);
+  if (iso !== null) return iso;
+  const slash = mdYyToExcelSerial(s);
+  if (slash !== null) return slash;
+  const num = Number(s);
+  if (!isNaN(num) && num > 25569 && num < 80000) return num; // plausible Excel serial range
+  return null;
+}
+
+/**
+ * Parse `time_of_call` from "HH:MM", "HH:MM:SS", or "H:MM AM/PM" into an
+ * Excel time fraction (0..1). Returns null when unrecognized.
+ */
+export function parseTimeToFraction(raw: string): number | null {
+  const s = String(raw ?? '').trim();
+  if (!s) return null;
+  const ampm = s.match(/^(\d{1,2}):(\d{2})(?::(\d{2}))?\s*(am|pm)$/i);
+  if (ampm) {
+    let h = parseInt(ampm[1], 10);
+    const mm = parseInt(ampm[2], 10);
+    const ss = ampm[3] ? parseInt(ampm[3], 10) : 0;
+    const isPM = ampm[4].toLowerCase() === 'pm';
+    if (h === 12) h = 0;
+    if (isPM) h += 12;
+    return (h * 3600 + mm * 60 + ss) / 86_400;
+  }
+  const frac = timeStringToFraction(s);
+  if (frac !== null) return frac;
+  const num = Number(s);
+  if (!isNaN(num) && num >= 0 && num <= 1) return num;
+  return null;
+}
+
+/**
+ * Strict format checks for the phone-number-shaped columns. The source
+ * client Excel files frequently corrupt these when the column isn't
+ * formatted as Text: `user_contact` collapses into scientific notation
+ * (e.g. "9.19944E+11") — an unrecoverable, lossy corruption we reject
+ * outright — and `from_number` loses its leading zero (e.g. "1169323435"
+ * instead of "01169323435") — a recoverable formatting slip, since Excel's
+ * numeric-cell behavior always strips a leading zero the same way, so we
+ * auto-restore it (see normalizeFromNumber) instead of rejecting the row.
+ */
+export function isScientificNotation(raw: string): boolean {
+  return /e[+-]?\d+/i.test(raw) || /^\d+\.\d+$/.test(raw.trim());
+}
+
+export function validateUserContact(raw: string): string | null {
+  const s = String(raw ?? '').trim();
+  if (!s) return 'user_contact is empty';
+  if (isScientificNotation(s)) {
+    return `user_contact "${s}" looks like a corrupted number (scientific notation). ` +
+      `Format the User Contact column as Text in the source file before re-uploading.`;
+  }
+  if (!/^\+?\d{8,15}$/.test(s)) {
+    return `user_contact "${s}" must contain only digits (optionally a leading +), 8-15 digits long.`;
+  }
+  return null;
+}
+
+/**
+ * Restore a from_number's leading zero when Excel's numeric-cell handling
+ * stripped it (e.g. "1169323435" → "01169323435"). Matches the same fix the
+ * client applies manually in Google Sheets via ="01169323435". Only pads a
+ * plain 10-digit string — anything else passes through unchanged so
+ * validateFromNumber can flag it properly.
+ */
+export function normalizeFromNumber(raw: string): string {
+  const s = String(raw ?? '').trim();
+  if (/^\d{10}$/.test(s)) return '0' + s;
+  return s;
+}
+
+export function validateFromNumber(raw: string): string | null {
+  const s = String(raw ?? '').trim();
+  if (!s) return 'from_number is empty';
+  if (isScientificNotation(s)) {
+    return `from_number "${s}" looks like a corrupted number (scientific notation). ` +
+      `Format the From Number column as Text in the source file before re-uploading.`;
+  }
+  const normalized = normalizeFromNumber(s);
+  if (!/^0\d{9,14}$/.test(normalized)) {
+    return `from_number "${s}" must be a valid number starting with "0" (e.g. 01169323435).`;
+  }
+  return null;
+}
+
+const METADATA_DATE_FIELDS = new Set([
+  'Session Date',
+  'Next Batch start date',
+  'Assignment Deadline',
+  'Extended Assignment Deadline',
+  'Orientation Date',
+  'Welcome Webinar Date',
+  'Batch Launch Date',
+  'First Graded Course Start Date',
+  'First Live Session Date',
+]);
+
+const METADATA_TIME_FIELDS = new Set([
+  'Session Start Time',
+  'Session End Time',
+]);
+
+/**
+ * Build a unified-input XLSX directly from agent-specific upload data.
+ *
+ * The input rows already contain the mandatory unified columns plus
+ * agent-specific metadata columns. The function:
+ *   1. Extracts the 11 mandatory columns as-is into the unified row.
+ *   2. Collects Email, Program Name (→ "Session Program"), Cohort ID, and
+ *      all agent-specific columns into a flat JSON user_metadata string.
+ *   3. Returns the result as an XLSX buffer that byte-for-byte matches the
+ *      client's reference unified file (unified_ggu_assignment_reminder_23_
+ *      july_2026_final.xlsx): user_id numeric, user_contact/from_number as
+ *      text cells, date_of_call numeric with 'yyyy-mm-dd' format,
+ *      time_of_call numeric with 'hh:mm:ss' format.
+ */
+export function agentDataToXlsxBuffer(
+  rows: Record<string, string>[],
+  agentType: AgentUseCase
+): Buffer {
+  const metaCols = [
+    ...AGENT_OPTIONAL_COLUMNS,
+    ...AGENT_SPECIFIC_COLUMNS[agentType],
+  ];
+
   const aoa: (string | number)[][] = [UNIFIED_CSV_COLUMNS.slice()];
-  for (const rec of records) {
-    aoa.push(UNIFIED_CSV_COLUMNS.map((col) => rec[col] ?? ''));
+
+  for (const row of rows) {
+    const meta: Record<string, string> = {};
+    for (const col of metaCols) {
+      let val = row[col] ?? '';
+      if (!val) continue;
+      const num = Number(val);
+      if (!isNaN(num) && val !== '') {
+        if (METADATA_DATE_FIELDS.has(col) && num > 40000 && num < 70000) {
+          val = excelSerialToISODate(num);
+        } else if (METADATA_TIME_FIELDS.has(col) && num >= 0 && num <= 1) {
+          val = excelFractionToTime(num);
+        }
+      }
+      const key = col === 'Program Name' ? 'Session Program' : col;
+      meta[key] = val;
+    }
+
+    const userIdRaw = String(row['user_id'] || '').trim();
+    const userIdVal: string | number = /^\d+$/.test(userIdRaw) ? Number(userIdRaw) : userIdRaw;
+
+    const userContact = String(row['user_contact'] || '').trim();
+    const fromNumber = String(row['from_number'] || '').trim();
+
+    const dateRaw = row['date_of_call'] || '';
+    const dateSerial = parseDateToSerial(dateRaw);
+    const dateVal: string | number = dateSerial !== null ? dateSerial : dateRaw;
+
+    const timeRaw = row['time_of_call'] || '';
+    const timeFrac = parseTimeToFraction(timeRaw);
+    const timeVal: string | number = timeFrac !== null ? timeFrac : timeRaw;
+
+    aoa.push([
+      userIdVal,
+      row['user_first_name'] || '',
+      row['user_last_name'] || '',
+      userContact,
+      fromNumber,
+      row['user_country_of_residence'] || '',
+      row['timezone'] || '',
+      dateVal,
+      timeVal,
+      row['reason'] || '',
+      row['agent_id'] || '',
+      JSON.stringify(meta),
+    ]);
   }
 
   const ws = XLSX.utils.aoa_to_sheet(aoa);
 
-  // Upgrade the date_of_call and time_of_call columns to numeric Excel types,
-  // and tag the long digit-string columns with an explicit text format ('@')
-  // so they match the working scheduler file exactly.
   const dateColIdx = UNIFIED_CSV_COLUMNS.indexOf('date_of_call');
   const timeColIdx = UNIFIED_CSV_COLUMNS.indexOf('time_of_call');
-  const textColIdxs = ['user_id', 'user_contact', 'from_number']
+  const textColIdxs = ['user_contact', 'from_number']
     .map((c) => UNIFIED_CSV_COLUMNS.indexOf(c))
     .filter((i) => i >= 0);
-  for (let r = 1; r <= records.length; r++) {
+
+  for (let r = 1; r < aoa.length; r++) {
     if (dateColIdx >= 0) {
       const addr = XLSX.utils.encode_cell({ c: dateColIdx, r });
       const cell = ws[addr];
-      if (cell && typeof cell.v === 'string') {
-        const serial = mdYyToExcelSerial(cell.v);
-        if (serial !== null) {
-          cell.t = 'n';
-          cell.v = serial;
-          cell.z = 'M/d/yyyy';
-        }
+      if (cell && typeof cell.v === 'number') {
+        cell.t = 'n';
+        cell.z = 'yyyy-mm-dd';
       }
     }
     if (timeColIdx >= 0) {
       const addr = XLSX.utils.encode_cell({ c: timeColIdx, r });
       const cell = ws[addr];
-      if (cell && typeof cell.v === 'string') {
-        const frac = timeStringToFraction(cell.v);
-        if (frac !== null) {
-          cell.t = 'n';
-          cell.v = frac;
-          cell.z = 'h:mm:ss am/pm';
-        }
+      if (cell && typeof cell.v === 'number') {
+        cell.t = 'n';
+        cell.z = 'hh:mm:ss';
       }
     }
     for (const ci of textColIdxs) {
@@ -305,279 +378,6 @@ export function unifiedCsvToXlsxBuffer(csvContent: string): Buffer {
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, ws, 'Sheet1');
   return XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' }) as Buffer;
-}
-
-/**
- * Build the Voice AI unified-input CSV.
- *
- * One row per calling-data record. Each row carries the 11 top-level fields
- * (user_id, user_first_name, …, agent_id) sourced from the calling data,
- * plus a flat JSON `user_metadata` blob built by merging:
- *
- *   • The matching student-list row (joined on User ID)
- *   • The matching grade-sheet row    (joined on User ID)
- *
- * Duplicate metadata keys (e.g. Email, Cohort ID, Batch, Status, First/Last
- * Name appearing in both student list and grade sheet) get a ".1" suffix
- * on the grade-sheet copy — matches the pandas-style merge output the
- * Voice AI consumer expects.
- *
- * Course Grade/GPA headers — the parser emits "<Course> - Grade", but the
- * downstream Voice AI spec expects "<Course> Grade" (no dash). We strip
- * the dash here when flattening into user_metadata so the displayed View
- * Data tab stays readable while the unified output matches spec exactly.
- */
-export function generateUnifiedCSV(
-  studentData: Record<string, string>[],
-  callingData: Record<string, string>[],
-  gradeData: Record<string, string>[] = []
-): string {
-  // Index student / grade rows by BOTH User ID AND Email so the join survives
-  // datasets that don't share the same User ID convention. We try User ID
-  // first (the canonical join key), then fall back to Email when no User ID
-  // match is found.
-  const indexBy = (
-    src: Record<string, string>[],
-    keyFn: (r: Record<string, string>) => string
-  ): Map<string, Record<string, string>> => {
-    const map = new Map<string, Record<string, string>>();
-    for (const r of src) {
-      const k = keyFn(r);
-      if (k) map.set(k, r);
-    }
-    return map;
-  };
-  const userId   = (r: Record<string, string>) => String(r['User ID'] || '').trim();
-  const email    = (r: Record<string, string>) =>
-    String(r['Email'] || r['Email ID'] || '').toLowerCase().trim();
-
-  const studentByUserId = indexBy(studentData, userId);
-  const studentByEmail  = indexBy(studentData, email);
-  const gradeByUserId   = indexBy(gradeData,   userId);
-  const gradeByEmail    = indexBy(gradeData,   email);
-
-  // For each calling row, prefer User-ID match, then Email match.
-  const lookupStudent = (c: Record<string, string>) => {
-    const uid = userId(c);
-    if (uid && studentByUserId.has(uid)) return studentByUserId.get(uid);
-    const em = email(c);
-    if (em && studentByEmail.has(em)) return studentByEmail.get(em);
-    return undefined;
-  };
-  const lookupGrade = (c: Record<string, string>) => {
-    const uid = userId(c);
-    if (uid && gradeByUserId.has(uid)) return gradeByUserId.get(uid);
-    const em = email(c);
-    if (em && gradeByEmail.has(em)) return gradeByEmail.get(em);
-    return undefined;
-  };
-
-  // Drop top-level fields from the student row before merging into metadata
-  // (they're already exposed as columns). Also drop join keys to avoid noise.
-  const STUDENT_DROP = new Set<string>([
-    'User ID', 'First Name', 'Last Name', 'Contact',
-    'Country Of Residence', 'Country of Residence', 'Country of  Residence',
-    'University', 'Program', // tagged automatically by storage layer; redundant
-  ]);
-  const GRADE_DROP = new Set<string>(['User ID']);
-
-  const buildMetadata = (
-    student: Record<string, string> | undefined,
-    grade:   Record<string, string> | undefined
-  ): string => {
-    const meta: Record<string, string> = {};
-
-    if (student) {
-      for (const [k, v] of Object.entries(student)) {
-        if (STUDENT_DROP.has(k)) continue;
-        meta[k] = v ?? '';
-      }
-    }
-    if (grade) {
-      for (const [k, v] of Object.entries(grade)) {
-        if (GRADE_DROP.has(k)) continue;
-        // "<Course> - Grade" → "<Course> Grade" (spec uses no dash)
-        const cleanKey = k.replace(/ - (Grade|GPA)$/i, ' $1');
-        // Suffix ".1" if the key already came from the student row
-        const finalKey = Object.prototype.hasOwnProperty.call(meta, cleanKey)
-          ? `${cleanKey}.1`
-          : cleanKey;
-        meta[finalKey] = v ?? '';
-      }
-    }
-    return JSON.stringify(meta);
-  };
-
-  /**
-   * Phone numbers in the working scheduler file are bare digit strings with
-   * no leading "+" and no spaces (e.g. "918297941606"). The scheduler's
-   * dialer expects this exact shape, so strip a leading "+" / spaces / dashes
-   * / parens from both user_contact and from_number.
-   */
-  const normalizePhone = (s: string): string =>
-    String(s || '').trim().replace(/^\+/, '').replace(/[\s()-]/g, '');
-
-  const getCountry = (r: Record<string, string>): string =>
-    r['Country Of Residence'] ||
-    r['Country of  Residence'] ||
-    r['Country of Residence'] || '';
-
-  const rows: Record<string, string>[] = [];
-
-  /**
-   * Voice AI scheduler date format: M/D/YY (US, single-digit allowed).
-   * Accepts the common input formats and normalizes:
-   *   01-06-2026, 01/06/2026 (DD-MM-YYYY)  → 6/1/26
-   *   6/1/26, 6/1/2026, 6-1-26 (M/D/YY[YY]) → 6/1/26  (already-normalized)
-   *   2026-06-01 (ISO YYYY-MM-DD)           → 6/1/26
-   */
-  const normalizeCallDate = (s: string): string => {
-    if (!s) return '';
-    const trimmed = s.trim();
-
-    // ISO yyyy-mm-dd
-    const iso = trimmed.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);
-    if (iso) {
-      const y = parseInt(iso[1], 10), m = parseInt(iso[2], 10), d = parseInt(iso[3], 10);
-      return `${m}/${d}/${String(y).slice(-2)}`;
-    }
-    // Generic n-n-n or n/n/n
-    const m = trimmed.match(/^(\d{1,4})[-/](\d{1,2})[-/](\d{1,4})$/);
-    if (m) {
-      let a = parseInt(m[1], 10), b = parseInt(m[2], 10), c = parseInt(m[3], 10);
-      let day: number, month: number, year: number;
-      if (a > 31) {
-        // YYYY-MM-DD style with non-dash separators
-        year = a; month = b; day = c;
-      } else if (c > 31 || c >= 100) {
-        // n-n-YYYY — assume DD-MM-YYYY (user's input format) unless first > 12
-        year = c;
-        if (a > 12) { day = a; month = b; }
-        else if (b > 12) { day = b; month = a; }
-        else { day = a; month = b; } // ambiguous — trust DD-MM as input convention
-      } else {
-        // M/D/YY (already in target form)
-        month = a; day = b; year = c < 100 ? 2000 + c : c;
-      }
-      if (year < 100) year += 2000;
-      return `${month}/${day}/${String(year).slice(-2)}`;
-    }
-    return trimmed;
-  };
-
-  /**
-   * Voice AI scheduler expects IANA timezone identifiers (e.g. Asia/Kolkata)
-   * rather than UTC offsets — offsets don't account for daylight saving so
-   * most schedulers reject them. Map common abbreviations + offsets we see
-   * in GGU calling data; passthrough if already IANA (contains a slash).
-   */
-  const normalizeTimezone = (s: string): string => {
-    if (!s) return '';
-    const t = s.trim();
-    if (t.includes('/')) return t; // already IANA (Asia/Kolkata, etc.)
-    const upper = t.toUpperCase().replace(/\s+/g, '');
-    const TZ: Record<string, string> = {
-      // India
-      'IST':        'Asia/Kolkata',
-      'GMT+5:30':   'Asia/Kolkata',
-      'GMT+05:30':  'Asia/Kolkata',
-      'UTC+5:30':   'Asia/Kolkata',
-      'UTC+05:30':  'Asia/Kolkata',
-      '+5:30':      'Asia/Kolkata',
-      '+05:30':     'Asia/Kolkata',
-      // Singapore / Malaysia / HK / China
-      'SGT':        'Asia/Singapore',
-      'GMT+8':      'Asia/Singapore',
-      'GMT+08':     'Asia/Singapore',
-      'GMT+08:00':  'Asia/Singapore',
-      'HKT':        'Asia/Hong_Kong',
-      'CST':        'Asia/Shanghai',  // China Std Time (overrides US CST below)
-      // Vietnam / Thailand / Indonesia
-      'ICT':        'Asia/Bangkok',
-      'GMT+7':      'Asia/Bangkok',
-      'GMT+07':     'Asia/Bangkok',
-      'GMT+07:00':  'Asia/Bangkok',
-      // Middle East
-      'GST':        'Asia/Dubai',
-      'GMT+4':      'Asia/Dubai',
-      'GMT+04':     'Asia/Dubai',
-      'GMT+3':      'Asia/Riyadh',
-      // Europe
-      'GMT':        'Europe/London',
-      'GMT+0':      'Europe/London',
-      'UTC':        'Europe/London',
-      'BST':        'Europe/London',
-      'CET':        'Europe/Paris',
-      'CEST':       'Europe/Paris',
-      'GMT+1':      'Europe/Paris',
-      'GMT+01':     'Europe/Paris',
-      'GMT+01:00':  'Europe/Paris',
-      'GMT+2':      'Europe/Athens',
-      // Americas
-      'EST':        'America/New_York',
-      'EDT':        'America/New_York',
-      'GMT-5':      'America/New_York',
-      'GMT-4':      'America/New_York',
-      'PST':        'America/Los_Angeles',
-      'PDT':        'America/Los_Angeles',
-      'GMT-8':      'America/Los_Angeles',
-      'GMT-7':      'America/Los_Angeles',
-      'MST':        'America/Denver',
-      'MDT':        'America/Denver',
-      'GMT-6':      'America/Chicago',
-      'GMT-2:30':   'America/St_Johns',
-      'GMT-3:30':   'America/St_Johns',
-      // Australia
-      'AEST':       'Australia/Sydney',
-      'AEDT':       'Australia/Sydney',
-      'GMT+10':     'Australia/Sydney',
-      'GMT+11':     'Australia/Sydney',
-    };
-    return TZ[upper] || t; // unknown → pass through; scheduler will surface it
-  };
-
-  for (const c of callingData) {
-    const student = lookupStudent(c);
-    const grade   = lookupGrade(c);
-
-    rows.push({
-      user_id:                   c['User ID']                  || '',
-      user_first_name:           c['First Name']               || '',
-      user_last_name:            c['Last Name']                || '',
-      // Source columns now match the unified-output naming, but fall back to
-      // older header spellings so previously-uploaded files still resolve.
-      user_contact:              normalizePhone(c['user_contact'] || c['Contact'] || ''),
-      from_number:               normalizePhone(c['from_number']  || c['From']    || ''),
-      user_country_of_residence:
-        c['user_country_of_residence'] ||
-        getCountry(c) ||
-        (student ? getCountry(student) : ''),
-      date_of_call:              normalizeCallDate(c['date_of_call'] || c['Date ( DD/MM/YYYY)'] || ''),
-      time_of_call:              c['time_of_call'] || c['Time ( 24 Hours )']  || '',
-      timezone:                  normalizeTimezone(c['timezone'] || c['Timezone'] || ''),
-      // Per the calling_data.xlsx spec, `reason` in the unified output is
-      // left blank — the scheduler routes by `agent_id` and looks up the
-      // human-readable agent name (e.g. "Grade Dispute Agent") from its own
-      // agent registry. Putting the same name back into `reason` was causing
-      // the scheduler to mark calls as 'skipped'. Raw upload row still has
-      // the input reason; only the unified output suppresses it.
-      reason:                    '',
-      // VOICE_AI_DEFAULT_AGENT_ID env var (if set) forces every row to use
-      // a single registered agent — needed while the agent-mapping IDs in
-      // the calling data aren't yet registered in the Voice AI console.
-      agent_id:                  VOICE_AI_DEFAULT_AGENT_ID || c['agent_id'] || c['Agent ID'] || '',
-      user_metadata:             buildMetadata(student, grade),
-    });
-  }
-
-  // Plain CSV — no Excel text-cell formulas. Long digit strings will look
-  // like scientific notation in Excel's default open view, but the underlying
-  // bytes are correct and downstream consumers (the Voice AI agent console,
-  // pandas, any CSV reader) get the raw string values they expect.
-  // To view this file properly in Excel: use Data → From Text/CSV and mark
-  // the long-number columns as Text in the import wizard. Or open in Numbers
-  // / a code editor / Google Sheets, all of which preserve the values.
-  return rowsToCSV(rows, UNIFIED_CSV_COLUMNS);
 }
 
 export function generateErrorReport(errorRows: ErrorRow[]): string {

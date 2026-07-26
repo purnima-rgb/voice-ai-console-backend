@@ -19,7 +19,16 @@ export interface AuthenticatedRequest extends Express.Request {
 }
 
 export type University = 'GGU' | 'Edgewood' | 'Rushford' | 'ESGCI';
-export type DataType = 'student-list' | 'grade-sheet' | 'calling-data';
+
+export type AgentUseCase =
+  | 'live-session-reminder'
+  | 'deferral-request'
+  | 'missed-assignment-deadline'
+  | 'new-program-onboarding'
+  | 'deadline-reminder';
+
+/** Every upload is tagged with the agent/use-case it was prepared for. */
+export type DataType = AgentUseCase;
 
 export interface UploadRecord {
   uploadId: string;
@@ -37,9 +46,9 @@ export interface UploadRecord {
 
 /**
  * What kind of thing happened. Drives the audit log feed.
- *  - upload:             a raw file (student-list / grade-sheet / calling-data) was uploaded
- *  - unified_generated:  a unified Voice-AI CSV was generated for a clean calling-data upload
- *  - s3_archived:        the unified CSV + XLSX were archived to S3
+ *  - upload:             an agent-data file was uploaded
+ *  - unified_generated:  a unified Voice-AI XLSX was generated for a clean agent-data upload
+ *  - s3_archived:        the unified XLSX was archived to S3
  *  - scheduler_notified: the downstream Voice-AI scheduler was pinged about a new unified file
  */
 export type AuditEventType =

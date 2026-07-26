@@ -28,7 +28,7 @@ interface DBUpload {
   status: 'success' | 'partial' | 'failed';
   rows: Record<string, string>[];
   errors: ErrorRow[];
-  /** Generated unified Voice-AI CSV (calling-data uploads only). */
+  /** Legacy column — unused now that unified files are rebuilt on demand from `rows`. */
   unified_csv?: string | null;
 }
 
@@ -106,9 +106,8 @@ export interface SaveUploadInput {
     originalName: string;
   };
   /**
-   * Optional generated unified CSV string. Set on successful calling-data
-   * uploads so it can be downloaded later (per-upload snapshot — never
-   * overwritten by subsequent uploads).
+   * Legacy field — no longer populated. Unified files are now rebuilt on
+   * demand from the stored `rows` (see getUploadRows).
    */
   unifiedCsv?: string;
 }
@@ -218,14 +217,18 @@ export async function getUploadErrors(uploadId: string): Promise<ErrorRow[]> {
   return (data?.errors as ErrorRow[] | undefined) || [];
 }
 
-export async function getUnifiedCsv(uploadId: string): Promise<string | null> {
+/**
+ * Raw stored rows (the validated data) for an upload — used to regenerate
+ * the unified XLSX on demand and to power the View Data screen.
+ */
+export async function getUploadRows(uploadId: string): Promise<Record<string, string>[] | null> {
   const { data, error } = await getSupabase()
     .from(UPLOADS_TABLE)
-    .select('unified_csv')
+    .select('rows')
     .eq('upload_id', uploadId)
     .maybeSingle();
   if (error) throw new Error(`Supabase select failed: ${error.message}`);
-  return (data?.unified_csv as string | null | undefined) ?? null;
+  return (data?.rows as Record<string, string>[] | null | undefined) ?? null;
 }
 
 export async function listUploads(filters?: {
@@ -249,87 +252,10 @@ export async function listUploads(filters?: {
   return (data || []).map((r) => rowToUploadRecord(r as DBUpload));
 }
 
-async function fetchRowsForDataType(
-  dataType: DataType,
-  filters?: { university?: string; program?: string }
-): Promise<{ uploads: DBUpload[] }> {
-  let query = getSupabase()
-    .from(UPLOADS_TABLE)
-    .select('upload_id, data_type, university, program, rows, uploaded_at')
-    .eq('data_type', dataType)
-    .order('uploaded_at', { ascending: false });
-
-  if (filters?.university) query = query.eq('university', filters.university);
-  if (filters?.program)    query = query.eq('program', filters.program);
-
-  const { data, error } = await query;
-  if (error) throw new Error(`Supabase select failed: ${error.message}`);
-  return { uploads: (data || []) as DBUpload[] };
-}
-
-export async function getStudentData(
-  university?: string,
-  program?: string
-): Promise<Record<string, string>[]> {
-  const { uploads } = await fetchRowsForDataType('student-list', { university, program });
-
-  // Deduplicate by Email/Email ID, preferring the most recent upload.
-  const emailsSeen = new Set<string>();
-  const out: Record<string, string>[] = [];
-
-  for (const upload of uploads) {
-    for (const row of upload.rows) {
-      const email = (row['Email'] || row['Email ID'] || '').toLowerCase().trim();
-      if (email && !emailsSeen.has(email)) {
-        emailsSeen.add(email);
-        out.push({
-          ...row,
-          University: upload.university || '',
-          Program: upload.program || '',
-        });
-      }
-    }
-  }
-  return out;
-}
-
-export async function getGradeSheetData(
-  university?: string,
-  program?: string
-): Promise<Record<string, string>[]> {
-  // fetchRowsForDataType returns newest-first; for re-uploads of grade
-  // sheets covering the same students, the latest upload is authoritative.
-  // Dedup by Email — matches getStudentData semantics.
-  const { uploads } = await fetchRowsForDataType('grade-sheet', { university, program });
-  const seen = new Set<string>();
-  const out: Record<string, string>[] = [];
-  for (const upload of uploads) {
-    for (const row of upload.rows) {
-      const email = (row['Email'] || row['Email ID'] || '').toLowerCase().trim();
-      if (!email) continue;
-      if (seen.has(email)) continue;
-      seen.add(email);
-      out.push({
-        ...row,
-        University: upload.university || '',
-        Program: upload.program || '',
-      });
-    }
-  }
-  return out;
-}
-
-export async function getCallingData(): Promise<Record<string, string>[]> {
-  const { uploads } = await fetchRowsForDataType('calling-data');
-  const out: Record<string, string>[] = [];
-  for (const upload of uploads) out.push(...upload.rows);
-  return out;
-}
-
 export async function getStats(): Promise<{
   totalUploadsToday: number;
-  totalStudents: number;
-  totalCallingRecords: number;
+  totalUploads: number;
+  totalRowsProcessed: number;
   lastSyncTime: string | null;
 }> {
   const { data, error } = await getSupabase()
@@ -342,15 +268,13 @@ export async function getStats(): Promise<{
   const todayPrefix = new Date().toISOString().split('T')[0];
 
   let totalUploadsToday = 0;
-  let totalStudents = 0;
-  let totalCallingRecords = 0;
-  let lastSyncTime: string | null = rows[0]?.uploaded_at || null;
+  let totalRowsProcessed = 0;
+  const lastSyncTime: string | null = rows[0]?.uploaded_at || null;
 
   for (const r of rows) {
     if (r.uploaded_at.startsWith(todayPrefix)) totalUploadsToday += 1;
-    if (r.data_type === 'student-list')  totalStudents += r.valid_rows;
-    if (r.data_type === 'calling-data')  totalCallingRecords += r.valid_rows;
+    totalRowsProcessed += r.valid_rows;
   }
 
-  return { totalUploadsToday, totalStudents, totalCallingRecords, lastSyncTime };
+  return { totalUploadsToday, totalUploads: rows.length, totalRowsProcessed, lastSyncTime };
 }
