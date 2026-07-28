@@ -55,10 +55,12 @@ export const AGENT_DISPLAY_NAMES: Record<AgentUseCase, string> = {
   'deadline-reminder':        'Deadline Reminder',
 };
 
+// user_last_name is intentionally NOT in this list — it's optional (client
+// request 2026-07-27). It still stays a top-level unified-output column
+// (see UNIFIED_CSV_COLUMNS); it's just not required to have a value.
 export const AGENT_MANDATORY_COLUMNS: string[] = [
   'user_id',
   'user_first_name',
-  'user_last_name',
   'user_contact',
   'from_number',
   'user_country_of_residence',
@@ -73,6 +75,21 @@ export const AGENT_OPTIONAL_COLUMNS: string[] = [
   'Email',
   'Program Name',
   'Cohort ID',
+];
+
+/**
+ * Telephony providers used for outbound calls, and the from_number each one
+ * uses. Currently a single provider/number across all agents and campaigns.
+ * Update this when new providers/numbers are added — mirrors AGENT_MAPPING's
+ * pattern in config/agentMapping.ts.
+ */
+export interface TelephonyProvider {
+  providerName: string;
+  fromNumber: string;
+}
+
+export const TELEPHONY_PROVIDERS: TelephonyProvider[] = [
+  { providerName: 'Exotel', fromNumber: '01169323435' },
 ];
 
 /**

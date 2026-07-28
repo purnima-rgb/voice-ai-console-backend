@@ -79,7 +79,7 @@ export function validateAgentData(
     }
     if (missingColumns.indexOf('time_of_call') === -1) {
       if (parseTimeToFraction(row['time_of_call']) === null) {
-        messages.push(`time_of_call "${row['time_of_call']}" is not a recognized time (expected HH:MM or HH:MM:SS)`);
+        messages.push(`time_of_call "${row['time_of_call']}" is not a recognized 24-hour time (expected HH:MM or HH:MM:SS, e.g. 21:00 or 21:00:00 — not 9:00 PM)`);
       }
     }
 

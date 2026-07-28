@@ -104,7 +104,9 @@ function mdYyToExcelSerial(s: string): number | null {
 }
 
 /**
- * Convert "H:MM" or "H:MM:SS" → fraction of a day (Excel time representation).
+ * Convert strict 24-hour "HH:MM" or "HH:MM:SS" → fraction of a day (Excel
+ * time representation). Rejects out-of-range hour/minute/second values
+ * (e.g. "25:00", "12:60") — those aren't valid in 24-hour format either.
  */
 function timeStringToFraction(s: string): number | null {
   const m = s.trim().match(/^(\d{1,2}):(\d{2})(?::(\d{2}))?$/);
@@ -112,6 +114,7 @@ function timeStringToFraction(s: string): number | null {
   const h  = parseInt(m[1], 10);
   const mm = parseInt(m[2], 10);
   const ss = m[3] ? parseInt(m[3], 10) : 0;
+  if (h > 23 || mm > 59 || ss > 59) return null;
   return (h * 3600 + mm * 60 + ss) / 86_400;
 }
 
@@ -173,22 +176,15 @@ export function parseDateToSerial(raw: string): number | null {
 }
 
 /**
- * Parse `time_of_call` from "HH:MM", "HH:MM:SS", or "H:MM AM/PM" into an
- * Excel time fraction (0..1). Returns null when unrecognized.
+ * Parse `time_of_call` from strict 24-hour "HH:MM" / "HH:MM:SS", or an
+ * already-numeric Excel time fraction, into an Excel time fraction (0..1).
+ * 12-hour AM/PM input is intentionally rejected (client requirement
+ * 2026-07-27: time_of_call must be 24-hour format) — callers should surface
+ * this as a validation error asking for a 24-hour value.
  */
 export function parseTimeToFraction(raw: string): number | null {
   const s = String(raw ?? '').trim();
   if (!s) return null;
-  const ampm = s.match(/^(\d{1,2}):(\d{2})(?::(\d{2}))?\s*(am|pm)$/i);
-  if (ampm) {
-    let h = parseInt(ampm[1], 10);
-    const mm = parseInt(ampm[2], 10);
-    const ss = ampm[3] ? parseInt(ampm[3], 10) : 0;
-    const isPM = ampm[4].toLowerCase() === 'pm';
-    if (h === 12) h = 0;
-    if (isPM) h += 12;
-    return (h * 3600 + mm * 60 + ss) / 86_400;
-  }
   const frac = timeStringToFraction(s);
   if (frac !== null) return frac;
   const num = Number(s);

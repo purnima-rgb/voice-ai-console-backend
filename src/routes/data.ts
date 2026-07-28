@@ -9,6 +9,7 @@ import {
 import { agentDataToXlsxBuffer } from '../services/csvService';
 import { listAuditEvents } from '../services/auditService';
 import { AGENT_MAPPING } from '../config/agentMapping';
+import { TELEPHONY_PROVIDERS } from '../config/constants';
 import { AuditEventType, University, AgentUseCase } from '../types';
 
 const router = Router();
@@ -21,6 +22,17 @@ router.get(
   authenticateToken,
   (_req: Request, res: Response): void => {
     res.json({ agents: AGENT_MAPPING, total: AGENT_MAPPING.length });
+  }
+);
+
+// GET /api/data/telephony-providers
+// Reference data — telephony provider ↔ from_number lookup. Accessible to
+// all authenticated roles.
+router.get(
+  '/telephony-providers',
+  authenticateToken,
+  (_req: Request, res: Response): void => {
+    res.json({ providers: TELEPHONY_PROVIDERS, total: TELEPHONY_PROVIDERS.length });
   }
 );
 
