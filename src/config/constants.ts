@@ -4,7 +4,6 @@ import { AgentUseCase, University } from '../types';
 export const UNIVERSITIES: Record<University, string[]> = {
   GGU: ['MBA', 'DBA', 'MS Management'],
   Edgewood: ['MBA', 'DBA', 'MBA + DBA Dual', 'EdD', 'MeD', 'EdD + MeD Dual'],
-  Rushford: ['MBA', 'Executive MBA'],
   ESGCI: ['DBA'],
   Waterloo: ['AI-CTO'],
   ParisBusinessSchool: ['MBMT'],
@@ -13,7 +12,6 @@ export const UNIVERSITIES: Record<University, string[]> = {
 export const UNIVERSITY_NAMES: Record<University, string> = {
   GGU: 'Golden Gate University',
   Edgewood: 'Edgewood College',
-  Rushford: 'Rushford Business School',
   ESGCI: 'ESGCI Paris',
   Waterloo: 'Waterloo',
   ParisBusinessSchool: 'Paris Business School',

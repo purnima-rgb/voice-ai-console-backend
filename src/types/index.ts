@@ -18,7 +18,7 @@ export interface AuthenticatedRequest extends Express.Request {
   user?: JwtPayload;
 }
 
-export type University = 'GGU' | 'Edgewood' | 'Rushford' | 'ESGCI' | 'Waterloo' | 'ParisBusinessSchool';
+export type University = 'GGU' | 'Edgewood' | 'ESGCI' | 'Waterloo' | 'ParisBusinessSchool';
 
 export type AgentUseCase =
   | 'live-session-reminder'
