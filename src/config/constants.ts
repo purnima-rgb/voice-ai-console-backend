@@ -1,17 +1,22 @@
 import { AgentUseCase, University } from '../types';
 
+// Updated 2026-07-29 per client-shared university/program list.
 export const UNIVERSITIES: Record<University, string[]> = {
   GGU: ['MBA', 'DBA', 'MS Management'],
-  Edgewood: ['MBA', 'DBA'],
+  Edgewood: ['MBA', 'DBA', 'MBA + DBA Dual', 'EdD', 'MeD', 'EdD + MeD Dual'],
   Rushford: ['MBA', 'Executive MBA'],
-  ESGCI: ['MBA', 'MSc Management'],
+  ESGCI: ['DBA'],
+  Waterloo: ['AI-CTO'],
+  ParisBusinessSchool: ['MBMT'],
 };
 
 export const UNIVERSITY_NAMES: Record<University, string> = {
   GGU: 'Golden Gate University',
-  Edgewood: 'Edgewood University',
+  Edgewood: 'Edgewood College',
   Rushford: 'Rushford Business School',
   ESGCI: 'ESGCI Paris',
+  Waterloo: 'Waterloo',
+  ParisBusinessSchool: 'Paris Business School',
 };
 
 // Column order matches the client's reference unified file exactly
