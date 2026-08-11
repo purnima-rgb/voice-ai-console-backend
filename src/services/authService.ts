@@ -23,11 +23,53 @@ const USERS: User[] = [
     passwordHash: bcrypt.hashSync('Swaroop@2330', 10),
   },
   {
+    id: '102',
+    email: 'sandeep.pereira@upgrad.com',
+    name: 'Sandeep Pereira',
+    role: 'system_admin',
+    passwordHash: bcrypt.hashSync('Sandeep@3142', 10),
+  },
+  {
     id: '101',
     email: 'dipika1.carpenter@upgrad.com',
     name: 'Dipika Carpenter',
     role: 'support_agent',
     passwordHash: bcrypt.hashSync('Dipika@1243', 10),
+  },
+  {
+    id: '103',
+    email: 'hiral.patani@upgrad.com',
+    name: 'Hiral Kamlesh Patani',
+    role: 'data_manager',
+    passwordHash: bcrypt.hashSync('Hiral@4231', 10),
+  },
+  {
+    id: '104',
+    email: 'khushbu1.bhadra@upgrad.com',
+    name: 'Khushbu Sudhir Bhadr',
+    role: 'data_manager',
+    passwordHash: bcrypt.hashSync('Khushbu@1342', 10),
+  },
+  {
+    id: '105',
+    email: 'mukhtar.sayyed@upgrad.com',
+    name: 'Mukhtar Ali Ali Sayyed',
+    role: 'data_manager',
+    passwordHash: bcrypt.hashSync('Mukhtar@2413', 10),
+  },
+  {
+    id: '106',
+    email: 'praveen.shettigar@upgrad.com',
+    name: 'Praveen Ravindra Shettigar',
+    role: 'data_manager',
+    passwordHash: bcrypt.hashSync('Praveen@3124', 10),
+  },
+  {
+    id: '107',
+    email: 'michelle.fernandes@upgrad.com',
+    name: 'Michelle Secelin Fernandes',
+    role: 'data_manager',
+    passwordHash: bcrypt.hashSync('Michelle@1243', 10),
   },
 
   // ─── Demo / QA accounts ────────────────────────────────────────────
