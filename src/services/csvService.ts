@@ -210,11 +210,11 @@ export function validateUserContact(raw: string): string | null {
   const s = String(raw ?? '').trim();
   if (!s) return 'user_contact is empty';
   if (isScientificNotation(s)) {
-    return `user_contact "${s}" looks like a corrupted number (scientific notation). ` +
-      `Format the User Contact column as Text in the source file before re-uploading.`;
+    return 'user_contact looks like a corrupted number (scientific notation). ' +
+      'Format the User Contact column as Text in the source file before re-uploading.';
   }
   if (!/^\+?\d{8,15}$/.test(s)) {
-    return `user_contact "${s}" must contain only digits (optionally a leading +), 8-15 digits long.`;
+    return 'user_contact must contain only digits (optionally a leading +), 8–15 digits long.';
   }
   return null;
 }
@@ -236,12 +236,12 @@ export function validateFromNumber(raw: string): string | null {
   const s = String(raw ?? '').trim();
   if (!s) return 'from_number is empty';
   if (isScientificNotation(s)) {
-    return `from_number "${s}" looks like a corrupted number (scientific notation). ` +
-      `Format the From Number column as Text in the source file before re-uploading.`;
+    return 'from_number looks like a corrupted number (scientific notation). ' +
+      'Format the From Number column as Text in the source file before re-uploading.';
   }
   const normalized = normalizeFromNumber(s);
   if (!/^0\d{9,14}$/.test(normalized)) {
-    return `from_number "${s}" must be a valid number starting with "0" (e.g. 01169323435).`;
+    return 'from_number must be a valid number starting with "0" (e.g. 01169323435).';
   }
   return null;
 }

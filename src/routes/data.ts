@@ -53,7 +53,7 @@ router.get(
       res.json({ data: rows || [], total: rows?.length || 0 });
     } catch (err) {
       console.error('upload-rows fetch failed:', err);
-      res.status(500).json({ error: 'Failed to fetch upload rows', details: String(err) });
+      res.status(500).json({ error: 'Failed to fetch upload rows' });
     }
   }
 );
@@ -95,7 +95,7 @@ router.get(
       res.send(buf);
     } catch (err) {
       console.error('unified-xlsx fetch failed:', err);
-      res.status(500).json({ error: 'Failed to fetch unified XLSX', details: String(err) });
+      res.status(500).json({ error: 'Failed to fetch unified XLSX' });
     }
   }
 );
@@ -118,7 +118,7 @@ router.get(
       res.json({ uploads, total: uploads.length });
     } catch (err) {
       console.error('upload-history fetch failed:', err);
-      res.status(500).json({ error: 'Failed to fetch upload history', details: String(err) });
+      res.status(500).json({ error: 'Failed to fetch upload history' });
     }
   }
 );
@@ -144,7 +144,7 @@ router.get(
       res.json({ events, total: events.length });
     } catch (err) {
       console.error('audit fetch failed:', err);
-      res.status(500).json({ error: 'Failed to fetch audit log', details: String(err) });
+      res.status(500).json({ error: 'Failed to fetch audit log' });
     }
   }
 );
@@ -159,7 +159,7 @@ router.get(
       res.json(stats);
     } catch (err) {
       console.error('stats fetch failed:', err);
-      res.status(500).json({ error: 'Failed to fetch stats', details: String(err) });
+      res.status(500).json({ error: 'Failed to fetch stats' });
     }
   }
 );

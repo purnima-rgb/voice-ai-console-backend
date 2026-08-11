@@ -7,20 +7,19 @@ export interface AppError extends Error {
 
 export function errorHandler(
   err: AppError,
-  req: Request,
+  _req: Request,
   res: Response,
   _next: NextFunction
 ): void {
-  console.error('Error:', err.message);
-  console.error('Stack:', err.stack);
+  // Log err.message only — never log err.stack in case it surfaces PII
+  // from a failed DB query or CSV parse exception.
+  console.error('[error]', err.message);
 
   const status = err.status || 500;
-  const message = err.message || 'Internal server error';
 
   res.status(status).json({
-    error: message,
+    error: status >= 500 ? 'An internal error occurred' : (err.message || 'Request failed'),
     code: err.code || 'INTERNAL_ERROR',
-    ...(process.env.NODE_ENV === 'development' && { stack: err.stack }),
   });
 }
 

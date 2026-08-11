@@ -235,14 +235,14 @@ router.post(
         validRows: errors.length === 0 ? valid.length : 0,
         errorRows: errors.length,
         errors: errors.slice(0, 100),
-        data: errors.length === 0 ? valid.slice(0, 50) : [],
+        data: [],
         unifiedCsvAvailable: xlsxBuffer != null,
         unifiedArchivedToS3,
         schedulerNotified,
       });
     } catch (err) {
       console.error('Upload error:', err);
-      res.status(500).json({ error: 'Failed to process file', details: String(err) });
+      res.status(500).json({ error: 'Failed to process file' });
     }
   }
 );
@@ -277,7 +277,7 @@ router.get(
       res.send(csvContent);
     } catch (err) {
       console.error('Error report fetch failed:', err);
-      res.status(500).json({ error: 'Failed to fetch error report', details: String(err) });
+      res.status(500).json({ error: 'Failed to fetch error report' });
     }
   }
 );
@@ -319,7 +319,7 @@ router.get(
       res.send(file.buffer);
     } catch (err) {
       console.error('Raw-file fetch failed:', err);
-      res.status(500).json({ error: 'Failed to fetch raw file', details: String(err) });
+      res.status(500).json({ error: 'Failed to fetch raw file' });
     }
   }
 );
