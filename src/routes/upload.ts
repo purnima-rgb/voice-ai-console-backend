@@ -2,6 +2,7 @@ import { Router, Request, Response } from 'express';
 import multer from 'multer';
 import { v4 as uuidv4 } from 'uuid';
 import { authenticateToken, requireRole } from '../middleware/auth';
+import { uploadLimiter } from '../app';
 import {
   parseRowsFromBuffer,
   generateErrorReport,
@@ -20,8 +21,12 @@ import {
 import {
   AGENT_USE_CASES,
   AGENT_MANDATORY_COLUMNS,
+  UNIVERSITIES,
 } from '../config/constants';
 import { AgentUseCase, University } from '../types';
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+function isValidUuid(s: string): boolean { return UUID_RE.test(s); }
 
 const router = Router();
 
@@ -66,6 +71,7 @@ router.post(
   '/agent-data',
   authenticateToken,
   requireRole('system_admin', 'data_manager'),
+  uploadLimiter,
   upload.single('file'),
   async (req: Request, res: Response): Promise<void> => {
     if (!req.file) {
@@ -82,6 +88,15 @@ router.post(
       res.status(400).json({
         error: `Invalid agentType. Must be one of: ${AGENT_USE_CASES.join(', ')}`,
       });
+      return;
+    }
+    const allowedPrograms = UNIVERSITIES[university as University];
+    if (!allowedPrograms) {
+      res.status(400).json({ error: 'Invalid university' });
+      return;
+    }
+    if (!allowedPrograms.includes(program)) {
+      res.status(400).json({ error: 'Invalid program for the selected university' });
       return;
     }
 
@@ -253,6 +268,7 @@ router.get(
   authenticateToken,
   async (req: Request, res: Response): Promise<void> => {
     const { uploadId } = req.params;
+    if (!isValidUuid(uploadId)) { res.status(400).json({ error: 'Invalid uploadId' }); return; }
 
     try {
       const record = await getUploadRecord(uploadId);
@@ -292,6 +308,7 @@ router.get(
   authenticateToken,
   async (req: Request, res: Response): Promise<void> => {
     const { uploadId } = req.params;
+    if (!isValidUuid(uploadId)) { res.status(400).json({ error: 'Invalid uploadId' }); return; }
 
     try {
       const record = await getUploadRecord(uploadId);

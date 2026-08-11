@@ -11,12 +11,19 @@ export function errorHandler(
   res: Response,
   _next: NextFunction
 ): void {
-  // Log err.message only — never log err.stack in case it surfaces PII
-  // from a failed DB query or CSV parse exception.
   console.error('[error]', err.message);
 
-  const status = err.status || 500;
+  // Multer-specific errors → meaningful 4xx instead of generic 500
+  if ((err as NodeJS.ErrnoException).code === 'LIMIT_FILE_SIZE') {
+    res.status(413).json({ error: 'File too large (max 50 MB)', code: 'FILE_TOO_LARGE' });
+    return;
+  }
+  if (err.message?.startsWith('Only CSV or Excel')) {
+    res.status(400).json({ error: err.message, code: 'INVALID_FILE_TYPE' });
+    return;
+  }
 
+  const status = err.status || 500;
   res.status(status).json({
     error: status >= 500 ? 'An internal error occurred' : (err.message || 'Request failed'),
     code: err.code || 'INTERNAL_ERROR',

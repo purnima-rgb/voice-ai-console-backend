@@ -72,28 +72,6 @@ const USERS: User[] = [
     passwordHash: '$2a$10$sXHFWSFhzkmFcwvlyrPGEOyYcYNJa9y35Ydo.U3SoSDRX0eNiNk06',
   },
 
-  // ─── Demo / QA accounts ────────────────────────────────────────────
-  {
-    id: '1',
-    email: 'admin@voiceai.com',
-    name: 'System Administrator',
-    role: 'system_admin',
-    passwordHash: '$2a$10$sgTxbheUnJsvuiuDm41seeUcIRoDGEjsIgd0NyLwOvwR2JA8OpC2q',
-  },
-  {
-    id: '2',
-    email: 'manager@voiceai.com',
-    name: 'Data Manager',
-    role: 'data_manager',
-    passwordHash: '$2a$10$HIHpG423bD99AwnBnMxfgu9wozp9sWpu0uMMwOpzcsKLWL4EBtVWW',
-  },
-  {
-    id: '3',
-    email: 'agent@voiceai.com',
-    name: 'Support Agent',
-    role: 'support_agent',
-    passwordHash: '$2a$10$jF0Kn1c5l99mbNb9FPtGp.7sBAkYyY4IG1SEOs4DWAMGpqLS1cqQu',
-  },
 ];
 
 export function findUserByEmail(email: string): User | undefined {

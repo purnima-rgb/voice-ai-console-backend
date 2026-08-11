@@ -14,6 +14,9 @@ import { AuditEventType, University, AgentUseCase } from '../types';
 
 const router = Router();
 
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+function isValidUuid(s: string): boolean { return UUID_RE.test(s); }
+
 // GET /api/data/agent-mapping
 // Reference data — agent name ↔ agent ID lookup for the 5 finalized agents.
 // Accessible to all authenticated roles.
@@ -45,6 +48,7 @@ router.get(
   requireRole('system_admin', 'data_manager'),
   async (req: Request, res: Response): Promise<void> => {
     const { uploadId } = req.params;
+    if (!isValidUuid(uploadId)) { res.status(400).json({ error: 'Invalid uploadId' }); return; }
     try {
       const record = await getUploadRecord(uploadId);
       if (!record) { res.status(404).json({ error: 'Upload record not found' }); return; }
@@ -68,8 +72,10 @@ router.get(
 router.get(
   '/unified-xlsx/:uploadId',
   authenticateToken,
+  requireRole('system_admin', 'data_manager'),
   async (req: Request, res: Response): Promise<void> => {
     const { uploadId } = req.params;
+    if (!isValidUuid(uploadId)) { res.status(400).json({ error: 'Invalid uploadId' }); return; }
     try {
       const record = await getUploadRecord(uploadId);
       if (!record) { res.status(404).json({ error: 'Upload record not found' }); return; }
@@ -134,12 +140,13 @@ router.get(
   async (req: Request, res: Response): Promise<void> => {
     try {
       const { eventType, university, program, uploadId, limit } = req.query;
+      const parsedLimit = limit ? parseInt(limit as string, 10) : undefined;
       const events = await listAuditEvents({
         eventType: eventType as AuditEventType | undefined,
         university: university as string | undefined,
         program: program as string | undefined,
         uploadId: uploadId as string | undefined,
-        limit: limit ? parseInt(limit as string, 10) : undefined,
+        limit: parsedLimit && !isNaN(parsedLimit) ? parsedLimit : undefined,
       });
       res.json({ events, total: events.length });
     } catch (err) {
