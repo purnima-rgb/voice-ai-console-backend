@@ -5,7 +5,6 @@ export interface User {
   email: string;
   name: string;
   role: UserRole;
-  passwordHash: string;
 }
 
 export interface JwtPayload {
