@@ -2,7 +2,11 @@ import { Request, Response, NextFunction } from 'express';
 import jwt from 'jsonwebtoken';
 import { JwtPayload, UserRole } from '../types';
 
-const JWT_SECRET = process.env.JWT_SECRET || 'voice-ai-console-dev-secret-2024';
+const _jwtSecret = process.env.JWT_SECRET;
+if (!_jwtSecret) {
+  throw new Error('JWT_SECRET environment variable is not set — server cannot start safely.');
+}
+const JWT_SECRET: string = _jwtSecret;
 
 export function authenticateToken(req: Request, res: Response, next: NextFunction): void {
   const authHeader = req.headers['authorization'];
