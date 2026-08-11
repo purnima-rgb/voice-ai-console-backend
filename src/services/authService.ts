@@ -14,6 +14,15 @@ import { User, UserRole } from '../types';
 // are kept for QA / smoke testing. Remove them before production handoff
 // if the client wants demo logins disabled.
 const USERS: User[] = [
+  // ─── Platform superadmin ───────────────────────────────────────────
+  {
+    id: '000',
+    email: 'admin@voiceai.com',
+    name: 'Voice AI Superadmin',
+    role: 'system_admin',
+    passwordHash: '$2a$10$j.0J7Wyyw9sOZ9hOgr4qPulvvM4a80wgvHVxqYv2do2P82lPWgXYW',
+  },
+
   // ─── Client users (upGrad) ─────────────────────────────────────────
   {
     id: '100',
