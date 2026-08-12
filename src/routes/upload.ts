@@ -2,7 +2,7 @@ import { Router, Request, Response } from 'express';
 import multer from 'multer';
 import { v4 as uuidv4 } from 'uuid';
 import { authenticateToken, requireRole } from '../middleware/auth';
-import { uploadLimiter } from '../app';
+import { uploadLimiter } from '../middleware/rateLimiters';
 import {
   parseRowsFromBuffer,
   generateErrorReport,

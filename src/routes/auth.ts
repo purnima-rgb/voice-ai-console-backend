@@ -1,7 +1,7 @@
 import { Router, Request, Response } from 'express';
 import { signInWithSupabase, findUserById } from '../services/authService';
 import { generateToken, authenticateToken } from '../middleware/auth';
-import { loginLimiter } from '../app';
+import { loginLimiter } from '../middleware/rateLimiters';
 
 const router = Router();
 
