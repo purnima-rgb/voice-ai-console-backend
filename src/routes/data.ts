@@ -90,7 +90,7 @@ router.get(
       const safeUni   = (record.university || 'all').replace(/[^a-z0-9]/gi, '-');
       const safeProg  = (record.program    || 'all').replace(/[^a-z0-9]/gi, '-');
 
-      const buf = agentDataToXlsxBuffer(rows, record.dataType as AgentUseCase);
+      const buf = agentDataToXlsxBuffer(rows, record.dataType as AgentUseCase, record.callType);
       const fileName = `unified-${record.dataType}-${safeUni}-${safeProg}-${safeStamp}.xlsx`;
 
       res.setHeader(

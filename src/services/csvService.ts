@@ -279,7 +279,8 @@ const METADATA_TIME_FIELDS = new Set([
  */
 export function agentDataToXlsxBuffer(
   rows: Record<string, string>[],
-  agentType: AgentUseCase
+  agentType: AgentUseCase,
+  callType?: string
 ): Buffer {
   const metaCols = [
     ...AGENT_OPTIONAL_COLUMNS,
@@ -331,6 +332,7 @@ export function agentDataToXlsxBuffer(
       timeVal,
       row['reason'] || '',
       row['agent_id'] || '',
+      callType || '',
       JSON.stringify(meta),
     ]);
   }

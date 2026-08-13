@@ -17,6 +17,8 @@ export interface AuthenticatedRequest extends Express.Request {
   user?: JwtPayload;
 }
 
+export type CallType = 'Live' | 'Test';
+
 export type University = 'GGU' | 'Edgewood' | 'ESGCI' | 'Waterloo' | 'ParisBusinessSchool';
 
 export type AgentUseCase =
@@ -35,6 +37,7 @@ export interface UploadRecord {
   dataType: DataType;
   university?: University;
   program?: string;
+  callType?: CallType;
   uploadedAt: string;
   uploadedBy: string;
   totalRows: number;

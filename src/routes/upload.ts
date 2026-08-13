@@ -79,7 +79,7 @@ router.post(
       return;
     }
 
-    const { university, program, agentType } = req.body;
+    const { university, program, agentType, callType } = req.body;
     if (!university || !program) {
       res.status(400).json({ error: 'University and program are required' });
       return;
@@ -88,6 +88,10 @@ router.post(
       res.status(400).json({
         error: `Invalid agentType. Must be one of: ${AGENT_USE_CASES.join(', ')}`,
       });
+      return;
+    }
+    if (!callType || !['Live', 'Test'].includes(callType)) {
+      res.status(400).json({ error: 'callType is required. Must be Live or Test.' });
       return;
     }
     const allowedPrograms = UNIVERSITIES[university as University];
@@ -115,7 +119,7 @@ router.post(
       let schedulerNotified = false;
 
       if (errors.length === 0 && valid.length > 0) {
-        xlsxBuffer = agentDataToXlsxBuffer(valid, agent);
+        xlsxBuffer = agentDataToXlsxBuffer(valid, agent, callType);
         const safeStamp = now.replace(/[:.]/g, '-');
         const safeUni = ((university as string) || 'all').replace(/[^a-z0-9]/gi, '-');
         const safeProg = ((program as string) || 'all').replace(/[^a-z0-9]/gi, '-');
@@ -129,6 +133,7 @@ router.post(
           dataType: agent,
           university: university as University,
           program,
+          callType: callType as 'Live' | 'Test',
           uploadedAt: now,
           uploadedBy: req.user!.email,
           totalRows: rows.length,

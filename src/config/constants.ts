@@ -33,6 +33,7 @@ export const UNIFIED_CSV_COLUMNS = [
   'time_of_call',
   'reason',
   'agent_id',
+  'call_type',
   'user_metadata',
 ];
 

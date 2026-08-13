@@ -13,6 +13,7 @@ interface DBUpload {
   data_type: DataType;
   university: string | null;
   program: string | null;
+  call_type: string | null;
   file_name: string;
   file_size_bytes: number;
   file_ext: string;
@@ -87,6 +88,7 @@ function rowToUploadRecord(r: DBUpload): UploadRecord {
     dataType: r.data_type,
     university: (r.university || undefined) as University | undefined,
     program: r.program || undefined,
+    callType: (r.call_type || undefined) as UploadRecord['callType'],
     uploadedAt: r.uploaded_at,
     uploadedBy: r.uploaded_by,
     totalRows: r.total_rows,
@@ -129,6 +131,7 @@ export async function saveUploadRecord(input: SaveUploadInput): Promise<void> {
     data_type: metadata.dataType,
     university: metadata.university || null,
     program: metadata.program || null,
+    call_type: metadata.callType || null,
     file_name: rawFile.originalName,
     file_size_bytes: rawFile.buffer.length,
     file_ext: fileExt,
